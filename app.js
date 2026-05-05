@@ -47,6 +47,7 @@ let client = loadClient();
 let view = new URLSearchParams(window.location.search).get("view") || client.view || "dashboard";
 let transferDraft = [];
 let scannerStream = null;
+let menuOpen = false;
 
 const app = document.getElementById("app");
 
@@ -213,7 +214,15 @@ function render() {
 
   const unread = state.notifications.filter((n) => n.userId === user.id && !n.read).length;
   app.innerHTML = `
-    <div class="shell">
+    <div class="shell ${menuOpen ? "menu-open" : ""}">
+      <header class="mobile-head">
+        <button class="menu-toggle" data-action="toggleMenu" aria-label="فتح القائمة">☰</button>
+        <div>
+          <b>مخازن التخزين المؤقت</b>
+          <span>${user.role === "admin" ? "الأدمن" : warehouseName(user.warehouseId)}</span>
+        </div>
+      </header>
+      <div class="menu-backdrop" data-action="closeMenu"></div>
       <aside class="side">
         <div class="logo">
           <b>مخازن التخزين المؤقت</b>
@@ -729,6 +738,7 @@ function bindCommon() {
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => {
     view = button.dataset.view;
     client.view = view;
+    menuOpen = false;
     saveClient();
     render();
   }));
@@ -738,6 +748,14 @@ function bindCommon() {
     client.token = null;
     client.userId = null;
     saveClient();
+    render();
+  });
+  document.querySelector("[data-action='toggleMenu']")?.addEventListener("click", () => {
+    menuOpen = !menuOpen;
+    render();
+  });
+  document.querySelector("[data-action='closeMenu']")?.addEventListener("click", () => {
+    menuOpen = false;
     render();
   });
   document.querySelectorAll("[data-action='toggleDark']").forEach((button) => button.addEventListener("click", async () => {
