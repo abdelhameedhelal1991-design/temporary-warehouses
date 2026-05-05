@@ -1,0 +1,167 @@
+{
+  "warehouses": [
+    {
+      "id": "main",
+      "name": "المستودع الرئيسي",
+      "keeperId": "keeper-main",
+      "minAlert": 20
+    },
+    {
+      "id": "nasiriya",
+      "name": "مستودع الناصرية",
+      "keeperId": "keeper-nasiriya",
+      "minAlert": 20
+    },
+    {
+      "id": "safa",
+      "name": "مستودع الصفا",
+      "keeperId": "keeper-safa",
+      "minAlert": 20
+    }
+  ],
+  "users": [
+    {
+      "id": "admin",
+      "username": "ADMIN",
+      "name": "الأدمن",
+      "role": "admin",
+      "password": "1991",
+      "warehouseId": null,
+      "active": true
+    },
+    {
+      "id": "keeper-main",
+      "username": "MAIN",
+      "name": "أمين المستودع الرئيسي",
+      "role": "keeper",
+      "password": "1111",
+      "warehouseId": "main",
+      "active": true
+    },
+    {
+      "id": "keeper-nasiriya",
+      "username": "NASIRIYA",
+      "name": "أمين مستودع الناصرية",
+      "role": "keeper",
+      "password": "2222",
+      "warehouseId": "nasiriya",
+      "active": true
+    },
+    {
+      "id": "keeper-safa",
+      "username": "SAFA",
+      "name": "أمين مستودع الصفا",
+      "role": "keeper",
+      "password": "3333",
+      "warehouseId": "safa",
+      "active": true
+    }
+  ],
+  "items": [
+    {
+      "id": "itm-1",
+      "name": "حليب نوسين",
+      "unit": "كرتون",
+      "barcodes": [
+        "11111",
+        "22222"
+      ],
+      "stock": {
+        "main": 80,
+        "nasiriya": 50,
+        "safa": 35
+      }
+    },
+    {
+      "id": "itm-2",
+      "name": "حليب نوسين",
+      "unit": "حبة",
+      "barcodes": [
+        "11111",
+        "22222"
+      ],
+      "stock": {
+        "main": 700,
+        "nasiriya": 500,
+        "safa": 320
+      }
+    },
+    {
+      "id": "itm-3",
+      "name": "مياه معدنية",
+      "unit": "كرتون",
+      "barcodes": [
+        "33333"
+      ],
+      "stock": {
+        "main": 160,
+        "nasiriya": 70,
+        "safa": 95
+      }
+    },
+    {
+      "id": "itm-4",
+      "name": "عصير برتقال",
+      "unit": "كرتون",
+      "barcodes": [
+        "44444",
+        "44445"
+      ],
+      "stock": {
+        "main": 46,
+        "nasiriya": 18,
+        "safa": 22
+      }
+    }
+  ],
+  "transfers": [
+    {
+      "id": "TR-1001",
+      "fromWarehouseId": "nasiriya",
+      "toWarehouseId": "safa",
+      "createdBy": "keeper-nasiriya",
+      "receiverId": "keeper-safa",
+      "status": "pending",
+      "locked": false,
+      "createdAt": "2026-05-06 09:15",
+      "approvedAt": null,
+      "note": "تحويل تجريبي",
+      "lines": [
+        {
+          "itemId": "itm-1",
+          "barcode": "11111",
+          "name": "حليب نوسين",
+          "unit": "كرتون",
+          "sentQty": 10,
+          "receivedQty": 10
+        }
+      ],
+      "history": [
+        {
+          "at": "2026-05-06 09:15",
+          "by": "keeper-nasiriya",
+          "action": "إنشاء التحويل"
+        }
+      ]
+    }
+  ],
+  "notifications": [
+    {
+      "id": "n-1",
+      "userId": "keeper-safa",
+      "transferId": "TR-1001",
+      "read": false,
+      "text": "تحويل جديد من مستودع الناصرية ينتظر الاستلام"
+    }
+  ],
+  "activity": [
+    {
+      "at": "2026-05-06 09:15",
+      "by": "keeper-nasiriya",
+      "action": "إنشاء تحويل TR-1001"
+    }
+  ],
+  "settings": {
+    "dark": false
+  }
+}

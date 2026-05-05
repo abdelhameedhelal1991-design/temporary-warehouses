@@ -1,0 +1,1083 @@
+const CLIENT_KEY = "temp-warehouses-client-v2";
+const EMPTY_STATE = {
+  warehouses: [
+    { id: "main", name: "المستودع الرئيسي", keeperId: "keeper-main", minAlert: 20 },
+    { id: "nasiriya", name: "مستودع الناصرية", keeperId: "keeper-nasiriya", minAlert: 20 },
+    { id: "safa", name: "مستودع الصفا", keeperId: "keeper-safa", minAlert: 20 }
+  ],
+  users: [
+    { id: "admin", username: "ADMIN", name: "الأدمن", role: "admin", password: "1991", warehouseId: null, active: true },
+    { id: "keeper-main", username: "MAIN", name: "أمين المستودع الرئيسي", role: "keeper", password: "1111", warehouseId: "main", active: true },
+    { id: "keeper-nasiriya", username: "NASIRIYA", name: "أمين مستودع الناصرية", role: "keeper", password: "2222", warehouseId: "nasiriya", active: true },
+    { id: "keeper-safa", username: "SAFA", name: "أمين مستودع الصفا", role: "keeper", password: "3333", warehouseId: "safa", active: true }
+  ],
+  items: [
+    { id: "itm-1", name: "حليب نوسين", unit: "كرتون", barcodes: ["11111", "22222"], stock: { main: 80, nasiriya: 50, safa: 35 } },
+    { id: "itm-2", name: "حليب نوسين", unit: "حبة", barcodes: ["11111", "22222"], stock: { main: 700, nasiriya: 500, safa: 320 } },
+    { id: "itm-3", name: "مياه معدنية", unit: "كرتون", barcodes: ["33333"], stock: { main: 160, nasiriya: 70, safa: 95 } },
+    { id: "itm-4", name: "عصير برتقال", unit: "كرتون", barcodes: ["44444", "44445"], stock: { main: 46, nasiriya: 18, safa: 22 } }
+  ],
+  transfers: [
+    {
+      id: "TR-1001",
+      fromWarehouseId: "nasiriya",
+      toWarehouseId: "safa",
+      createdBy: "keeper-nasiriya",
+      receiverId: "keeper-safa",
+      status: "pending",
+      locked: false,
+      createdAt: "2026-05-06 09:15",
+      approvedAt: null,
+      note: "تحويل تجريبي",
+      lines: [{ itemId: "itm-1", barcode: "11111", name: "حليب نوسين", unit: "كرتون", sentQty: 10, receivedQty: 10 }],
+      history: [{ at: "2026-05-06 09:15", by: "keeper-nasiriya", action: "إنشاء التحويل" }]
+    }
+  ],
+  notifications: [
+    { id: "n-1", userId: "keeper-safa", transferId: "TR-1001", read: false, text: "تحويل جديد من مستودع الناصرية ينتظر الاستلام" }
+  ],
+  activity: [
+    { at: "2026-05-06 09:15", by: "keeper-nasiriya", action: "إنشاء تحويل TR-1001" }
+  ],
+  settings: { dark: false }
+};
+
+let state = clone(EMPTY_STATE);
+let client = loadClient();
+let view = client.view || "dashboard";
+let transferDraft = [];
+let scannerStream = null;
+
+const app = document.getElementById("app");
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+window.addEventListener("error", (event) => {
+  if (!app) return;
+  app.innerHTML = `
+    <div class="splash">
+      <section class="card" style="max-width:520px">
+        <div class="section"><h2>حدث خطأ في تحميل التطبيق</h2></div>
+        <p class="muted">${event.message || "خطأ غير معروف"}</p>
+        <button class="btn primary" onclick="location.reload()">إعادة التحميل</button>
+      </section>
+    </div>
+  `;
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  if (!app) return;
+  app.innerHTML = `
+    <div class="splash">
+      <section class="card" style="max-width:520px">
+        <div class="section"><h2>تعذر تحميل البيانات</h2></div>
+        <p class="muted">${event.reason?.message || "راجع اتصال السيرفر ثم أعد التحميل"}</p>
+        <button class="btn primary" onclick="location.reload()">إعادة التحميل</button>
+      </section>
+    </div>
+  `;
+});
+
+function normalizeState(input) {
+  const next = clone(EMPTY_STATE);
+  if (!input || !Array.isArray(input.users) || !Array.isArray(input.warehouses)) return next;
+  return {
+    ...next,
+    ...input,
+    settings: { ...next.settings, ...(input.settings || {}) },
+    transfers: Array.isArray(input.transfers) ? input.transfers : [],
+    notifications: Array.isArray(input.notifications) ? input.notifications : [],
+    activity: Array.isArray(input.activity) ? input.activity : []
+  };
+}
+
+function loadClient() {
+  try {
+    return JSON.parse(localStorage.getItem(CLIENT_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveClient() {
+  localStorage.setItem(CLIENT_KEY, JSON.stringify(client));
+}
+
+async function loadState() {
+  try {
+    const response = await fetch("/api/state", {
+      headers: authHeaders()
+    });
+    if (response.status === 401) {
+      client.token = null;
+      client.userId = null;
+      saveClient();
+      state = normalizeState(null);
+      return;
+    }
+    state = normalizeState(await response.json());
+  } catch {
+    state = normalizeState(null);
+  }
+  document.body.classList.toggle("dark", !!state.settings.dark);
+}
+
+async function persist() {
+  if (!client.token) return;
+  try {
+    await fetch("/api/state", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders()
+      },
+      body: JSON.stringify(state)
+    });
+  } catch {
+    toast("تعذر الاتصال بالسيرفر، راجع تشغيل server.js");
+  }
+}
+
+function authHeaders() {
+  return client.token ? { Authorization: `Bearer ${client.token}` } : {};
+}
+
+function currentUser() {
+  return state.users.find((user) => user.id === client.userId && user.active);
+}
+
+function isAdmin() {
+  return currentUser()?.role === "admin";
+}
+
+function warehouseName(id) {
+  return state.warehouses.find((warehouse) => warehouse.id === id)?.name || "-";
+}
+
+function userName(id) {
+  return state.users.find((user) => user.id === id)?.name || "-";
+}
+
+function itemByBarcode(barcode) {
+  const code = String(barcode || "").trim();
+  return state.items.filter((item) => item.barcodes.includes(code));
+}
+
+function now() {
+  return new Date().toLocaleString("ar-SA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addActivity(action, transfer) {
+  const user = currentUser();
+  const entry = { at: now(), by: user?.id || "system", action };
+  state.activity.unshift(entry);
+  if (transfer) transfer.history.push(entry);
+}
+
+function toast(message) {
+  const old = document.querySelector(".toast");
+  if (old) old.remove();
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2800);
+}
+
+function moneylessNumber(value) {
+  return Number(value || 0).toLocaleString("ar-SA");
+}
+
+function statusLabel(status) {
+  return { pending: "معلق", approved: "معتمد", rejected: "مرفوض" }[status] || status;
+}
+
+function render() {
+  const user = currentUser();
+  if (!user) {
+    renderLogin();
+    return;
+  }
+
+  const unread = state.notifications.filter((n) => n.userId === user.id && !n.read).length;
+  app.innerHTML = `
+    <div class="shell">
+      <aside class="side">
+        <div class="logo">
+          <b>مخازن التخزين المؤقت</b>
+          <span>إدارة تحويلات ومخزون أونلاين</span>
+        </div>
+        <div class="profile">
+          <b>${user.name}</b>
+          <span>${user.role === "admin" ? "حساب الأدمن" : warehouseName(user.warehouseId)}</span>
+        </div>
+        <nav class="nav">
+          ${nav("dashboard", "لوحة التحكم")}
+          ${nav("transfers", `التحويلات${unread ? ` (${unread})` : ""}`)}
+          ${nav("receive", "الاستلام")}
+          ${nav("stock", "الأرصدة")}
+          ${nav("items", "الأصناف")}
+          ${nav("reports", "التقارير")}
+          ${nav("notifications", "الإشعارات")}
+          ${nav("settings", "الإعدادات")}
+          ${isAdmin() ? nav("users", "المستخدمون") : ""}
+        </nav>
+        <button class="logout" data-action="logout">تسجيل الخروج</button>
+      </aside>
+      <main class="main">${renderView()}</main>
+    </div>
+  `;
+  bindCommon();
+  bindView();
+}
+
+function nav(id, label) {
+  return `<button class="${view === id ? "active" : ""}" data-view="${id}">${label}</button>`;
+}
+
+function renderLogin() {
+  app.innerHTML = `
+    <section class="login">
+      <div class="login-hero">
+        <div>
+          <h1>مخازن التخزين المؤقت</h1>
+          <p>نظام عربي لإدارة المخازن والتحويلات بين المستودعات، مع أرصدة مباشرة وموافقات استلام وسجل نشاط كامل.</p>
+        </div>
+        <p>المستودع الرئيسي، مستودع الناصرية، مستودع الصفا</p>
+      </div>
+      <form class="login-panel" id="loginForm">
+        <h2>تسجيل الدخول</h2>
+        <div class="field">
+          <label>اسم المستخدم</label>
+          <input id="username" autocomplete="username" value="ADMIN" />
+        </div>
+        <div class="field">
+          <label>كلمة المرور</label>
+          <input id="password" type="password" autocomplete="current-password" value="1991" />
+        </div>
+        <button class="btn primary" type="submit">دخول للنظام</button>
+        <div class="hint">
+          الأدمن: ADMIN / 1991<br />
+          الرئيسي: MAIN / 1111، الناصرية: NASIRIYA / 2222، الصفا: SAFA / 3333
+        </div>
+      </form>
+    </section>
+  `;
+  document.getElementById("loginForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    login();
+  });
+}
+
+async function login() {
+  const username = document.getElementById("username").value.trim().toUpperCase();
+  const password = document.getElementById("password").value;
+
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+
+    if (!response.ok) {
+      toast("بيانات الدخول غير صحيحة");
+      return;
+    }
+
+    const result = await response.json();
+    state = normalizeState(result.state);
+    client.token = result.token;
+    client.userId = result.user.id;
+    client.view = "dashboard";
+    view = "dashboard";
+    saveClient();
+    render();
+  } catch {
+    toast("تعذر الاتصال بالسيرفر");
+  }
+}
+
+function renderTop(title, subtitle, extra = "") {
+  return `
+    <div class="top">
+      <div><h1>${title}</h1><p>${subtitle}</p></div>
+      <div class="tools">${extra}<button class="btn" data-action="toggleDark">الوضع الليلي</button></div>
+    </div>
+  `;
+}
+
+function renderView() {
+  return ({
+    dashboard: renderDashboard,
+    transfers: renderTransfers,
+    receive: renderReceive,
+    stock: renderStock,
+    items: renderItems,
+    reports: renderReports,
+    notifications: renderNotifications,
+    settings: renderSettings,
+    users: renderUsers
+  }[view] || renderDashboard)();
+}
+
+function renderDashboard() {
+  const transfers = visibleTransfers();
+  const today = transfers.filter((t) => t.createdAt.includes(todayKey())).length;
+  const low = lowStockRows().length;
+  const totalStock = state.items.reduce((sum, item) => sum + Object.values(item.stock).reduce((a, b) => a + Number(b || 0), 0), 0);
+  return `
+    ${renderTop("لوحة التحكم", "مؤشرات مباشرة للمخزون والتحويلات")}
+    <div class="grid stats">
+      ${stat("إجمالي الأصناف", state.items.length)}
+      ${stat("إجمالي التحويلات", transfers.length)}
+      ${stat("تحويلات اليوم", today)}
+      ${stat("تنبيهات النقص", low)}
+    </div>
+    <div class="grid two" style="margin-top:14px">
+      <section class="card">
+        <div class="section"><h2>آخر الحركات</h2><button class="btn" data-view="transfers">عرض الكل</button></div>
+        ${transferTable(transfers.slice(0, 6))}
+      </section>
+      <section class="card">
+        <div class="section"><h2>نشاط المستودعات</h2></div>
+        ${warehouseBars()}
+      </section>
+    </div>
+    <div class="grid two" style="margin-top:14px">
+      <section class="card">
+        <div class="section"><h2>الأصناف الأكثر حركة</h2></div>
+        ${itemMovementBars()}
+      </section>
+      <section class="card">
+        <div class="section"><h2>آخر سجل نشاط</h2></div>
+        ${activityList(state.activity.slice(0, 7))}
+      </section>
+    </div>
+  `;
+}
+
+function stat(label, value) {
+  return `<section class="card stat"><b>${moneylessNumber(value)}</b><span class="muted">${label}</span></section>`;
+}
+
+function renderTransfers() {
+  return `
+    ${renderTop("التحويلات", "إنشاء تحويلات جديدة ومتابعة حالاتها", isAdmin() ? `<button class="btn primary" data-action="exportTransfers">تصدير Excel</button>` : "")}
+    <div class="grid two">
+      <section class="card">
+        <div class="section"><h2>تحويل جديد</h2><button class="btn blue" data-action="openScanner">فتح الكاميرا</button></div>
+        ${transferForm()}
+      </section>
+      <section class="card">
+        <div class="section"><h2>قارئ الباركود</h2></div>
+        <div class="camera">
+          <video id="scannerVideo" muted playsinline></video>
+          <button class="btn" data-action="stopScanner">إيقاف الكاميرا</button>
+          <span class="muted">يدعم BarcodeDetector في المتصفحات المتوافقة، ومعه إدخال يدوي سريع.</span>
+        </div>
+      </section>
+    </div>
+    <section class="card" style="margin-top:14px">
+      <div class="section"><h2>كل التحويلات</h2></div>
+      ${filters()}
+      ${transferTable(filteredTransfers())}
+    </section>
+  `;
+}
+
+function transferForm() {
+  const user = currentUser();
+  const fromOptions = state.warehouses.map((w) => `<option value="${w.id}" ${user.warehouseId === w.id ? "selected" : ""}>${w.name}</option>`).join("");
+  const toOptions = state.warehouses.map((w) => `<option value="${w.id}">${w.name}</option>`).join("");
+  return `
+    <form id="transferForm" class="form">
+      <div class="field">
+        <label>من مستودع</label>
+        <select id="fromWarehouse" ${user.role === "keeper" ? "disabled" : ""}>${fromOptions}</select>
+      </div>
+      <div class="field">
+        <label>إلى مستودع</label>
+        <select id="toWarehouse">${toOptions}</select>
+      </div>
+      <div class="field">
+        <label>باركود</label>
+        <input id="barcodeInput" placeholder="امسح أو اكتب الباركود" />
+      </div>
+      <div class="field">
+        <label>الوحدة</label>
+        <select id="unitSelect"><option value="">اكتب الباركود أولًا</option></select>
+      </div>
+      <div class="field">
+        <label>الكمية</label>
+        <input id="qtyInput" type="number" min="1" value="1" />
+      </div>
+      <div class="field">
+        <label>ملاحظة</label>
+        <input id="noteInput" placeholder="اختياري" />
+      </div>
+      <div class="actions full">
+        <button class="btn" type="button" data-action="addLine">إضافة للصنف</button>
+        <button class="btn primary" type="submit">إرسال التحويل</button>
+      </div>
+      <div class="full">${draftTable()}</div>
+    </form>
+  `;
+}
+
+function draftTable() {
+  if (!transferDraft.length) return `<div class="empty">لم يتم إضافة أصناف للتحويل بعد.</div>`;
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>الباركود</th><th>الصنف</th><th>الوحدة</th><th>الكمية</th><th>تحكم</th></tr></thead>
+        <tbody>${transferDraft.map((line, index) => `
+          <tr>
+            <td>${line.barcode}</td><td>${line.name}</td><td>${line.unit}</td><td>${line.sentQty}</td>
+            <td><button class="btn danger" data-action="removeDraft" data-index="${index}" type="button">حذف</button></td>
+          </tr>
+        `).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function filters() {
+  return `
+    <div class="filters">
+      <input id="filterText" placeholder="بحث بالصنف أو الباركود أو رقم الحركة" value="${client.filterText || ""}" />
+      <select id="filterWarehouse"><option value="">كل المستودعات</option>${state.warehouses.map((w) => `<option value="${w.id}" ${client.filterWarehouse === w.id ? "selected" : ""}>${w.name}</option>`).join("")}</select>
+      <select id="filterStatus"><option value="">كل الحالات</option><option value="pending" ${client.filterStatus === "pending" ? "selected" : ""}>معلق</option><option value="approved" ${client.filterStatus === "approved" ? "selected" : ""}>معتمد</option><option value="rejected" ${client.filterStatus === "rejected" ? "selected" : ""}>مرفوض</option></select>
+      <input id="filterDate" type="date" value="${client.filterDate || ""}" />
+      <button class="btn" data-action="clearFilters">مسح الفلاتر</button>
+    </div>
+  `;
+}
+
+function visibleTransfers() {
+  const user = currentUser();
+  const sorted = [...state.transfers].sort((a, b) => b.id.localeCompare(a.id));
+  if (user.role === "admin") return sorted;
+  return sorted.filter((t) => t.fromWarehouseId === user.warehouseId || t.toWarehouseId === user.warehouseId);
+}
+
+function filteredTransfers() {
+  let list = visibleTransfers();
+  const text = (client.filterText || "").trim().toLowerCase();
+  if (text) {
+    list = list.filter((t) => {
+      return t.id.toLowerCase().includes(text) || t.lines.some((l) => `${l.name} ${l.barcode}`.toLowerCase().includes(text));
+    });
+  }
+  if (client.filterWarehouse) list = list.filter((t) => t.fromWarehouseId === client.filterWarehouse || t.toWarehouseId === client.filterWarehouse);
+  if (client.filterStatus) list = list.filter((t) => t.status === client.filterStatus);
+  if (client.filterDate) list = list.filter((t) => t.createdAt.startsWith(client.filterDate));
+  return list;
+}
+
+function transferTable(transfers) {
+  if (!transfers.length) return `<div class="empty">لا توجد تحويلات مطابقة.</div>`;
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>رقم الحركة</th><th>من</th><th>إلى</th><th>الأصناف</th><th>الحالة</th><th>القفل</th><th>التاريخ</th><th>تحكم</th></tr></thead>
+        <tbody>${transfers.map((t) => `
+          <tr>
+            <td>${t.id}</td>
+            <td>${warehouseName(t.fromWarehouseId)}</td>
+            <td>${warehouseName(t.toWarehouseId)}</td>
+            <td>${t.lines.map((l) => `${l.name} - ${l.unit}: ${l.receivedQty ?? l.sentQty}`).join("<br>")}</td>
+            <td><span class="badge ${t.status}">${statusLabel(t.status)}</span></td>
+            <td><span class="badge ${t.locked ? "locked" : ""}">${t.locked ? "مقفلة" : "مفتوحة"}</span></td>
+            <td>${t.createdAt}</td>
+            <td>${transferActions(t)}</td>
+          </tr>
+        `).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function transferActions(t) {
+  const user = currentUser();
+  const canReceive = t.status === "pending" && t.toWarehouseId === user.warehouseId;
+  const admin = isAdmin();
+  const buttons = [];
+  if (canReceive || admin && t.status === "pending") buttons.push(`<button class="btn success" data-action="receiveTransfer" data-id="${t.id}">استلام</button>`);
+  if (admin) {
+    buttons.push(`<button class="btn blue" data-action="printTransfer" data-id="${t.id}">طباعة</button>`);
+    buttons.push(`<button class="btn" data-action="toggleLock" data-id="${t.id}">${t.locked ? "فتح" : "قفل"}</button>`);
+    buttons.push(`<button class="btn danger" data-action="deleteTransfer" data-id="${t.id}">حذف</button>`);
+  }
+  return buttons.length ? `<div class="actions">${buttons.join("")}</div>` : `<span class="muted">لا يوجد</span>`;
+}
+
+function renderReceive() {
+  const user = currentUser();
+  const pending = visibleTransfers().filter((t) => t.status === "pending" && (isAdmin() || t.toWarehouseId === user.warehouseId));
+  return `
+    ${renderTop("الاستلام", "مراجعة التحويلات الواردة وتأكيد الكميات")}
+    <section class="card">
+      <div class="section"><h2>تحويلات معلقة للاستلام</h2></div>
+      ${transferTable(pending)}
+    </section>
+  `;
+}
+
+function renderStock() {
+  return `
+    ${renderTop("الأرصدة", "كمية كل صنف في كل مستودع وتنبيهات النقص")}
+    <section class="card">
+      <div class="section"><h2>بحث وفلترة الأصناف</h2></div>
+      <div class="filters">
+        <input id="stockSearch" placeholder="اسم الصنف أو الباركود" value="${client.stockSearch || ""}" />
+        <select id="stockWarehouse"><option value="">كل المستودعات</option>${state.warehouses.map((w) => `<option value="${w.id}" ${client.stockWarehouse === w.id ? "selected" : ""}>${w.name}</option>`).join("")}</select>
+        <button class="btn primary" data-action="exportStock">تصدير الأرصدة</button>
+      </div>
+      ${stockTable()}
+    </section>
+  `;
+}
+
+function stockRows() {
+  const text = (client.stockSearch || "").trim().toLowerCase();
+  return state.items.filter((item) => {
+    const hay = `${item.name} ${item.unit} ${item.barcodes.join(" ")}`.toLowerCase();
+    return !text || hay.includes(text);
+  });
+}
+
+function stockTable() {
+  const warehouses = client.stockWarehouse ? state.warehouses.filter((w) => w.id === client.stockWarehouse) : state.warehouses;
+  const rows = stockRows();
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>الباركود</th><th>الصنف</th><th>الوحدة</th>${warehouses.map((w) => `<th>${w.name}</th>`).join("")}<th>تنبيه</th></tr></thead>
+        <tbody>${rows.map((item) => {
+          const low = warehouses.some((w) => Number(item.stock[w.id] || 0) <= Number(w.minAlert || 0));
+          return `<tr>
+            <td>${item.barcodes.join(";")}</td><td>${item.name}</td><td>${item.unit}</td>
+            ${warehouses.map((w) => `<td>${moneylessNumber(item.stock[w.id] || 0)}</td>`).join("")}
+            <td>${low ? `<span class="badge pending">منخفض</span>` : `<span class="badge approved">جيد</span>`}</td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function lowStockRows() {
+  return state.items.flatMap((item) => state.warehouses
+    .filter((w) => Number(item.stock[w.id] || 0) <= Number(w.minAlert || 0))
+    .map((w) => ({ item, warehouse: w, qty: item.stock[w.id] || 0 })));
+}
+
+function renderItems() {
+  return `
+    ${renderTop("الأصناف", "إضافة وتعديل واستيراد الأصناف من Excel أو Google Sheets")}
+    <div class="grid two">
+      <section class="card">
+        <div class="section"><h2>إضافة صنف</h2></div>
+        <form id="itemForm" class="form">
+          <div class="field"><label>الباركودات</label><input id="itemBarcodes" placeholder="11111;22222" required /></div>
+          <div class="field"><label>اسم الصنف</label><input id="itemName" required /></div>
+          <div class="field"><label>الوحدة</label><input id="itemUnit" placeholder="كرتون / حبة" required /></div>
+          ${state.warehouses.map((w) => `<div class="field"><label>${w.name}</label><input id="stock-${w.id}" type="number" min="0" value="0" /></div>`).join("")}
+          <button class="btn primary full" type="submit">حفظ الصنف</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="section"><h2>استيراد الأصناف</h2></div>
+        <div class="field">
+          <label>الصيغة: الباركود، اسم الصنف، الوحدة، الكمية</label>
+          <textarea id="importText" placeholder="11111;22222,حليب نوسين,كرتون,50"></textarea>
+        </div>
+        <div class="actions" style="margin-top:10px">
+          <input id="importFile" type="file" accept=".csv,.txt,.tsv" />
+          <button class="btn primary" data-action="importItems">استيراد</button>
+        </div>
+      </section>
+    </div>
+    <section class="card" style="margin-top:14px">
+      <div class="section"><h2>جدول الأصناف</h2></div>
+      ${stockTable()}
+    </section>
+  `;
+}
+
+function renderReports() {
+  return `
+    ${renderTop("التقارير", "إحصائيات ورسوم بيانية ومؤشرات مخزنية", isAdmin() ? `<button class="btn primary" data-action="exportTransfers">تصدير الحركات</button><button class="btn" data-action="exportStock">تصدير الأرصدة</button>` : "")}
+    <div class="grid three">
+      ${stat("أكثر المستودعات نشاطًا", busiestWarehouse())}
+      ${stat("الأصناف منخفضة الكمية", lowStockRows().length)}
+      ${stat("الحركات المعتمدة", state.transfers.filter((t) => t.status === "approved").length)}
+    </div>
+    <div class="grid two" style="margin-top:14px">
+      <section class="card"><div class="section"><h2>أرصدة المستودعات</h2></div>${stockBars()}</section>
+      <section class="card"><div class="section"><h2>أكثر الأصناف حركة</h2></div>${itemMovementBars()}</section>
+    </div>
+  `;
+}
+
+function renderNotifications() {
+  const notes = state.notifications.filter((n) => n.userId === currentUser().id);
+  return `
+    ${renderTop("الإشعارات", "تنبيهات التحويلات والحركات المهمة")}
+    <section class="card">
+      <div class="section"><h2>إشعاراتي</h2><button class="btn" data-action="readAll">تحديد الكل كمقروء</button></div>
+      <div class="notice-list">${notes.length ? notes.map((n) => `<article class="notice"><b>${n.text}</b><p>${n.read ? "مقروء" : "جديد"} - ${n.transferId}</p></article>`).join("") : `<div class="empty">لا توجد إشعارات.</div>`}</div>
+    </section>
+  `;
+}
+
+function renderSettings() {
+  return `
+    ${renderTop("الإعدادات", "إعدادات النظام والنسخ الاحتياطي")}
+    <div class="grid two">
+      <section class="card">
+        <div class="section"><h2>نسخ احتياطي واستعادة</h2></div>
+        <div class="actions">
+          <button class="btn primary" data-action="backup">تنزيل نسخة احتياطية</button>
+          <input id="restoreFile" type="file" accept=".json" />
+          <button class="btn" data-action="restore">استعادة</button>
+        </div>
+      </section>
+      <section class="card">
+        <div class="section"><h2>حدود النقص</h2></div>
+        <form id="alertForm" class="form">
+          ${state.warehouses.map((w) => `<div class="field"><label>${w.name}</label><input id="alert-${w.id}" type="number" min="0" value="${w.minAlert || 0}" /></div>`).join("")}
+          <button class="btn primary full">حفظ الحدود</button>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderUsers() {
+  if (!isAdmin()) return renderDashboard();
+  return `
+    ${renderTop("المستخدمون", "إنشاء أمناء المخازن وتعديل كلمات المرور")}
+    <div class="grid two">
+      <section class="card">
+        <div class="section"><h2>إضافة مستخدم</h2></div>
+        <form id="userForm" class="form">
+          <div class="field"><label>الاسم</label><input id="newName" required /></div>
+          <div class="field"><label>اسم المستخدم</label><input id="newUsername" required /></div>
+          <div class="field"><label>كلمة المرور</label><input id="newPassword" required /></div>
+          <div class="field"><label>الصلاحية</label><select id="newRole"><option value="keeper">أمين مستودع</option><option value="admin">أدمن</option></select></div>
+          <div class="field full"><label>المستودع</label><select id="newWarehouse"><option value="">بدون</option>${state.warehouses.map((w) => `<option value="${w.id}">${w.name}</option>`).join("")}</select></div>
+          <button class="btn primary full">إضافة</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="section"><h2>الحسابات</h2></div>
+        <div class="table-wrap">
+          <table><thead><tr><th>الاسم</th><th>المستخدم</th><th>الدور</th><th>المستودع</th><th>تحكم</th></tr></thead>
+          <tbody>${state.users.map((u) => `<tr><td>${u.name}</td><td>${u.username}</td><td>${u.role}</td><td>${warehouseName(u.warehouseId)}</td><td><button class="btn" data-action="changePassword" data-id="${u.id}">كلمة المرور</button></td></tr>`).join("")}</tbody></table>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function activityList(items) {
+  return `<div class="notice-list">${items.length ? items.map((a) => `<article class="notice"><b>${a.action}</b><p>${userName(a.by)} - ${a.at}</p></article>`).join("") : `<div class="empty">لا يوجد نشاط.</div>`}</div>`;
+}
+
+function warehouseBars() {
+  const counts = state.warehouses.map((w) => ({ label: w.name, value: state.transfers.filter((t) => t.fromWarehouseId === w.id || t.toWarehouseId === w.id).length }));
+  return bars(counts);
+}
+
+function stockBars() {
+  const counts = state.warehouses.map((w) => ({ label: w.name, value: state.items.reduce((sum, item) => sum + Number(item.stock[w.id] || 0), 0) }));
+  return bars(counts);
+}
+
+function itemMovementBars() {
+  const map = {};
+  state.transfers.forEach((t) => t.lines.forEach((l) => map[l.name] = (map[l.name] || 0) + Number(l.receivedQty || l.sentQty || 0)));
+  return bars(Object.entries(map).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 6));
+}
+
+function bars(rows) {
+  if (!rows.length) return `<div class="empty">لا توجد بيانات.</div>`;
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  return `<div class="bars">${rows.map((r) => `<div class="bar-row"><div class="bar-meta"><b>${r.label}</b><span>${moneylessNumber(r.value)}</span></div><div class="bar"><span style="width:${Math.max(4, r.value / max * 100)}%"></span></div></div>`).join("")}</div>`;
+}
+
+function busiestWarehouse() {
+  const rows = state.warehouses.map((w) => ({ name: w.name, count: state.transfers.filter((t) => t.fromWarehouseId === w.id || t.toWarehouseId === w.id).length }));
+  return rows.sort((a, b) => b.count - a.count)[0]?.name || "-";
+}
+
+function bindCommon() {
+  document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => {
+    view = button.dataset.view;
+    client.view = view;
+    saveClient();
+    render();
+  }));
+  document.querySelector("[data-action='logout']")?.addEventListener("click", () => {
+    stopScanner();
+    fetch("/api/logout", { method: "POST", headers: authHeaders() }).catch(() => {});
+    client.token = null;
+    client.userId = null;
+    saveClient();
+    render();
+  });
+  document.querySelectorAll("[data-action='toggleDark']").forEach((button) => button.addEventListener("click", async () => {
+    state.settings.dark = !state.settings.dark;
+    document.body.classList.toggle("dark", state.settings.dark);
+    await persist();
+  }));
+}
+
+function bindView() {
+  bindFilters();
+  document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
+  document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
+  document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
+  document.querySelectorAll("[data-action='removeDraft']").forEach((b) => b.addEventListener("click", () => { transferDraft.splice(Number(b.dataset.index), 1); render(); }));
+  document.querySelectorAll("[data-action='receiveTransfer']").forEach((b) => b.addEventListener("click", () => receiveTransfer(b.dataset.id)));
+  document.querySelectorAll("[data-action='toggleLock']").forEach((b) => b.addEventListener("click", () => toggleLock(b.dataset.id)));
+  document.querySelectorAll("[data-action='deleteTransfer']").forEach((b) => b.addEventListener("click", () => deleteTransfer(b.dataset.id)));
+  document.querySelectorAll("[data-action='printTransfer']").forEach((b) => b.addEventListener("click", () => printTransfer(b.dataset.id)));
+  document.querySelector("[data-action='exportTransfers']")?.addEventListener("click", exportTransfers);
+  document.querySelector("[data-action='exportStock']")?.addEventListener("click", exportStock);
+  document.querySelector("[data-action='openScanner']")?.addEventListener("click", openScanner);
+  document.querySelector("[data-action='stopScanner']")?.addEventListener("click", stopScanner);
+  document.getElementById("itemForm")?.addEventListener("submit", createItem);
+  document.querySelector("[data-action='importItems']")?.addEventListener("click", importItems);
+  document.querySelector("[data-action='readAll']")?.addEventListener("click", readAll);
+  document.querySelector("[data-action='backup']")?.addEventListener("click", backup);
+  document.querySelector("[data-action='restore']")?.addEventListener("click", restore);
+  document.getElementById("alertForm")?.addEventListener("submit", saveAlerts);
+  document.getElementById("userForm")?.addEventListener("submit", createUser);
+  document.querySelectorAll("[data-action='changePassword']").forEach((b) => b.addEventListener("click", () => changePassword(b.dataset.id)));
+}
+
+function bindFilters() {
+  [["filterText", "input"], ["filterWarehouse", "change"], ["filterStatus", "change"], ["filterDate", "change"], ["stockSearch", "input"], ["stockWarehouse", "change"]].forEach(([id, eventName]) => {
+    document.getElementById(id)?.addEventListener(eventName, (event) => {
+      client[id] = event.target.value;
+      if (id === "filterText") client.filterText = event.target.value;
+      if (id === "filterWarehouse") client.filterWarehouse = event.target.value;
+      if (id === "filterStatus") client.filterStatus = event.target.value;
+      if (id === "filterDate") client.filterDate = event.target.value;
+      saveClient();
+      render();
+    });
+  });
+  document.querySelector("[data-action='clearFilters']")?.addEventListener("click", () => {
+    client.filterText = "";
+    client.filterWarehouse = "";
+    client.filterStatus = "";
+    client.filterDate = "";
+    saveClient();
+    render();
+  });
+}
+
+function updateUnitOptions() {
+  const barcode = document.getElementById("barcodeInput").value;
+  const select = document.getElementById("unitSelect");
+  const matches = itemByBarcode(barcode);
+  select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.name} - ${item.unit}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
+}
+
+function addDraftLine() {
+  const barcode = document.getElementById("barcodeInput").value.trim();
+  const itemId = document.getElementById("unitSelect").value;
+  const qty = Number(document.getElementById("qtyInput").value);
+  const item = state.items.find((entry) => entry.id === itemId);
+  if (!barcode || !item || qty <= 0) {
+    toast("أدخل باركود صحيح ووحدة وكمية");
+    return;
+  }
+  transferDraft.push({ itemId: item.id, barcode, name: item.name, unit: item.unit, sentQty: qty, receivedQty: qty });
+  document.getElementById("barcodeInput").value = "";
+  document.getElementById("qtyInput").value = 1;
+  render();
+}
+
+async function createTransfer(event) {
+  event.preventDefault();
+  const user = currentUser();
+  const fromWarehouseId = user.role === "keeper" ? user.warehouseId : document.getElementById("fromWarehouse").value;
+  const toWarehouseId = document.getElementById("toWarehouse").value;
+  if (!fromWarehouseId || !toWarehouseId || fromWarehouseId === toWarehouseId) {
+    toast("اختر مستودعين مختلفين");
+    return;
+  }
+  if (!transferDraft.length) {
+    toast("أضف صنف واحد على الأقل");
+    return;
+  }
+  const receiverId = state.warehouses.find((w) => w.id === toWarehouseId)?.keeperId || "admin";
+  const transfer = {
+    id: `TR-${Date.now().toString().slice(-6)}`,
+    fromWarehouseId,
+    toWarehouseId,
+    createdBy: user.id,
+    receiverId,
+    status: "pending",
+    locked: false,
+    createdAt: now(),
+    approvedAt: null,
+    note: document.getElementById("noteInput").value,
+    lines: clone(transferDraft),
+    history: []
+  };
+  addActivity(`إنشاء تحويل ${transfer.id}`, transfer);
+  state.transfers.unshift(transfer);
+  state.notifications.unshift({ id: `n-${Date.now()}`, userId: receiverId, transferId: transfer.id, read: false, text: `تحويل جديد من ${warehouseName(fromWarehouseId)} إلى ${warehouseName(toWarehouseId)}` });
+  transferDraft = [];
+  await persist();
+  render();
+  toast("تم إرسال التحويل وإشعار أمين المستودع المستقبل");
+}
+
+async function receiveTransfer(id) {
+  const transfer = state.transfers.find((t) => t.id === id);
+  if (!transfer || transfer.status !== "pending") return;
+  transfer.lines.forEach((line) => {
+    const value = prompt(`الكمية المستلمة: ${line.name} - ${line.unit}`, line.receivedQty ?? line.sentQty);
+    const qty = Number(value);
+    if (qty >= 0) line.receivedQty = qty;
+  });
+  applyTransfer(transfer);
+  transfer.status = "approved";
+  transfer.locked = true;
+  transfer.approvedAt = now();
+  addActivity(`اعتماد استلام التحويل ${transfer.id}`, transfer);
+  state.notifications.unshift({ id: `n-${Date.now()}`, userId: transfer.createdBy, transferId: transfer.id, read: false, text: `تم اعتماد استلام التحويل ${transfer.id}` });
+  await persist();
+  render();
+  toast("تم اعتماد الاستلام وتحديث الأرصدة");
+}
+
+function applyTransfer(transfer) {
+  if (transfer.applied) return;
+  transfer.lines.forEach((line) => {
+    const item = state.items.find((entry) => entry.id === line.itemId);
+    if (!item) return;
+    const qty = Number(line.receivedQty ?? line.sentQty);
+    item.stock[transfer.fromWarehouseId] = Number(item.stock[transfer.fromWarehouseId] || 0) - qty;
+    item.stock[transfer.toWarehouseId] = Number(item.stock[transfer.toWarehouseId] || 0) + qty;
+  });
+  transfer.applied = true;
+}
+
+async function toggleLock(id) {
+  const transfer = state.transfers.find((t) => t.id === id);
+  if (!transfer || !isAdmin()) return;
+  transfer.locked = !transfer.locked;
+  addActivity(`${transfer.locked ? "قفل" : "فتح"} الحركة ${transfer.id}`, transfer);
+  await persist();
+  render();
+}
+
+async function deleteTransfer(id) {
+  if (!isAdmin() || !confirm("هل تريد حذف الحركة؟")) return;
+  state.transfers = state.transfers.filter((t) => t.id !== id);
+  state.notifications = state.notifications.filter((n) => n.transferId !== id);
+  addActivity(`حذف الحركة ${id}`);
+  await persist();
+  render();
+}
+
+function printTransfer(id) {
+  const transfer = state.transfers.find((t) => t.id === id);
+  if (!transfer) return;
+  const html = `
+    <html lang="ar" dir="rtl"><head><title>${transfer.id}</title><style>body{font-family:Tahoma;padding:24px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #ccc;padding:8px;text-align:right}</style></head>
+    <body><h1>تحويل ${transfer.id}</h1><p>${warehouseName(transfer.fromWarehouseId)} إلى ${warehouseName(transfer.toWarehouseId)}</p>
+    <table><thead><tr><th>الصنف</th><th>الوحدة</th><th>المرسل</th><th>المستلم</th></tr></thead><tbody>${transfer.lines.map((l) => `<tr><td>${l.name}</td><td>${l.unit}</td><td>${l.sentQty}</td><td>${l.receivedQty}</td></tr>`).join("")}</tbody></table></body></html>`;
+  const win = window.open("", "_blank");
+  win.document.write(html);
+  win.document.close();
+  win.print();
+}
+
+async function createItem(event) {
+  event.preventDefault();
+  const item = {
+    id: `itm-${Date.now()}`,
+    barcodes: document.getElementById("itemBarcodes").value.split(";").map((x) => x.trim()).filter(Boolean),
+    name: document.getElementById("itemName").value.trim(),
+    unit: document.getElementById("itemUnit").value.trim(),
+    stock: {}
+  };
+  state.warehouses.forEach((w) => item.stock[w.id] = Number(document.getElementById(`stock-${w.id}`).value || 0));
+  state.items.push(item);
+  addActivity(`إضافة صنف ${item.name}`);
+  await persist();
+  render();
+}
+
+async function importItems() {
+  const file = document.getElementById("importFile")?.files?.[0];
+  let text = document.getElementById("importText").value;
+  if (file) text = await file.text();
+  const rows = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  rows.forEach((row) => {
+    const parts = row.includes("\t") ? row.split("\t") : row.split(",");
+    if (parts.length < 4 || parts[0].includes("الباركود")) return;
+    const [barcodes, name, unit, qty] = parts;
+    const stock = {};
+    state.warehouses.forEach((w) => stock[w.id] = 0);
+    stock.main = Number(qty || 0);
+    state.items.push({ id: `itm-${Date.now()}-${Math.random().toString(16).slice(2)}`, barcodes: barcodes.split(";").map((x) => x.trim()), name: name.trim(), unit: unit.trim(), stock });
+  });
+  addActivity("استيراد أصناف");
+  await persist();
+  render();
+  toast("تم استيراد الأصناف إلى المستودع الرئيسي");
+}
+
+async function openScanner() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    toast("الكاميرا غير مدعومة في هذا المتصفح");
+    return;
+  }
+  const video = document.getElementById("scannerVideo");
+  scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  video.srcObject = scannerStream;
+  await video.play();
+  if (!("BarcodeDetector" in window)) {
+    toast("المتصفح لا يدعم قراءة الباركود تلقائيًا، استخدم الإدخال اليدوي");
+    return;
+  }
+  const detector = new BarcodeDetector({ formats: ["qr_code", "ean_13", "code_128", "code_39", "upc_a"] });
+  const scan = async () => {
+    if (!scannerStream) return;
+    const codes = await detector.detect(video).catch(() => []);
+    if (codes.length) {
+      document.getElementById("barcodeInput").value = codes[0].rawValue;
+      updateUnitOptions();
+      navigator.vibrate?.(80);
+      toast(`تم قراءة الباركود ${codes[0].rawValue}`);
+    }
+    requestAnimationFrame(scan);
+  };
+  scan();
+}
+
+function stopScanner() {
+  scannerStream?.getTracks().forEach((track) => track.stop());
+  scannerStream = null;
+}
+
+async function readAll() {
+  state.notifications.forEach((n) => {
+    if (n.userId === currentUser().id) n.read = true;
+  });
+  await persist();
+  render();
+}
+
+function csvDownload(filename, rows) {
+  const csv = "\ufeff" + rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadFile(filename, content, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportTransfers() {
+  if (!isAdmin()) return;
+  const rows = [["رقم الحركة", "من", "إلى", "الحالة", "التاريخ", "الصنف", "الوحدة", "المرسل", "المستلم"]];
+  state.transfers.forEach((t) => t.lines.forEach((l) => rows.push([t.id, warehouseName(t.fromWarehouseId), warehouseName(t.toWarehouseId), statusLabel(t.status), t.createdAt, l.name, l.unit, l.sentQty, l.receivedQty])));
+  csvDownload("transfers.csv", rows);
+}
+
+function exportStock() {
+  const rows = [["الباركود", "الصنف", "الوحدة", ...state.warehouses.map((w) => w.name)]];
+  state.items.forEach((item) => rows.push([item.barcodes.join(";"), item.name, item.unit, ...state.warehouses.map((w) => item.stock[w.id] || 0)]));
+  csvDownload("stock.csv", rows);
+}
+
+function backup() {
+  downloadFile("backup.json", JSON.stringify(state, null, 2), "application/json;charset=utf-8");
+}
+
+async function restore() {
+  const file = document.getElementById("restoreFile")?.files?.[0];
+  if (!file) return toast("اختر ملف النسخة الاحتياطية");
+  const text = await file.text();
+  state = normalizeState(JSON.parse(text.replace(/^\ufeff/, "")));
+  await persist();
+  render();
+}
+
+async function saveAlerts(event) {
+  event.preventDefault();
+  state.warehouses.forEach((w) => w.minAlert = Number(document.getElementById(`alert-${w.id}`).value || 0));
+  await persist();
+  toast("تم حفظ حدود النقص");
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const user = {
+    id: `user-${Date.now()}`,
+    name: document.getElementById("newName").value,
+    username: document.getElementById("newUsername").value.trim().toUpperCase(),
+    password: document.getElementById("newPassword").value,
+    role: document.getElementById("newRole").value,
+    warehouseId: document.getElementById("newWarehouse").value || null,
+    active: true
+  };
+  state.users.push(user);
+  if (user.role === "keeper" && user.warehouseId) {
+    const warehouse = state.warehouses.find((w) => w.id === user.warehouseId);
+    if (warehouse) warehouse.keeperId = user.id;
+  }
+  addActivity(`إضافة مستخدم ${user.name}`);
+  await persist();
+  render();
+}
+
+async function changePassword(id) {
+  const user = state.users.find((u) => u.id === id);
+  const password = prompt(`كلمة مرور جديدة لـ ${user.name}`);
+  if (!password) return;
+  user.password = password;
+  addActivity(`تعديل كلمة مرور ${user.name}`);
+  await persist();
+  render();
+}
+
+async function init() {
+  app.innerHTML = `<div class="splash"><div class="loader"></div></div>`;
+  if (client.token) await loadState();
+  render();
+}
+
+init();

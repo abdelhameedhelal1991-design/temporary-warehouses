@@ -1,0 +1,14 @@
+{
+  "name": "temporary-warehouses",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Arabic online warehouse and transfer management app.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
