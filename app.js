@@ -47,6 +47,7 @@ let client = loadClient();
 let view = new URLSearchParams(window.location.search).get("view") || client.view || "dashboard";
 let transferDraft = [];
 let scannerStream = null;
+let scannerOpen = false;
 let menuOpen = false;
 
 const app = document.getElementById("app");
@@ -163,7 +164,7 @@ function userName(id) {
 
 function itemByBarcode(barcode) {
   const code = String(barcode || "").trim();
-  return state.items.filter((item) => item.barcodes.includes(code));
+  return state.items.filter((item) => (item.barcodes || []).some((entry) => String(entry).trim() === code));
 }
 
 function now() {
@@ -270,11 +271,11 @@ function renderLogin() {
         <h2>تسجيل الدخول</h2>
         <div class="field">
           <label>اسم المستخدم</label>
-          <input id="username" autocomplete="username" value="ADMIN" />
+          <input id="username" autocomplete="username" />
         </div>
         <div class="field">
           <label>كلمة المرور</label>
-          <input id="password" type="password" autocomplete="current-password" value="1991" />
+          <input id="password" type="password" autocomplete="current-password" />
         </div>
         <button class="btn primary" type="submit">دخول للنظام</button>
         <div class="hint">
@@ -404,6 +405,22 @@ function renderTransfers() {
       ${filters()}
       ${transferTable(filteredTransfers())}
     </section>
+    ${scannerOpen ? scannerOverlay() : ""}
+  `;
+}
+
+function scannerOverlay() {
+  return `
+    <div class="scanner-overlay">
+      <section class="scanner-panel">
+        <div class="section">
+          <h2>قارئ الباركود</h2>
+          <button class="btn danger" data-action="stopScanner" type="button">إغلاق</button>
+        </div>
+        <video id="scannerVideo" muted playsinline></video>
+        <p class="muted">وجه الكاميرا على الباركود. بعد القراءة يرجع التطبيق تلقائيًا لشاشة التحويل.</p>
+      </section>
+    </div>
   `;
 }
 
@@ -423,11 +440,12 @@ function transferForm() {
       </div>
       <div class="field">
         <label>باركود</label>
-        <input id="barcodeInput" placeholder="امسح أو اكتب الباركود" />
+        <input id="barcodeInput" placeholder="امسح أو اكتب الباركود" value="${client.scannedBarcode || ""}" />
       </div>
       <div class="field">
         <label>الوحدة</label>
         <select id="unitSelect"><option value="">اكتب الباركود أولًا</option></select>
+        <div id="barcodeMatchText" class="hint mini"></div>
       </div>
       <div class="field">
         <label>الكمية</label>
@@ -611,12 +629,17 @@ function renderItems() {
       <section class="card">
         <div class="section"><h2>استيراد الأصناف</h2></div>
         <div class="field">
-          <label>الصيغة: الباركود، اسم الصنف، الوحدة، الكمية</label>
+          <label>الصيغة: الباركود، اسم الصنف، الوحدة، الكمية اختيارية</label>
           <textarea id="importText" placeholder="11111;22222,حليب نوسين,كرتون,50"></textarea>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>رابط Google Sheets</label>
+          <input id="sheetUrl" placeholder="ضع رابط الشيت هنا" />
         </div>
         <div class="actions" style="margin-top:10px">
           <input id="importFile" type="file" accept=".csv,.txt,.tsv" />
           <button class="btn primary" data-action="importItems">استيراد</button>
+          <button class="btn" data-action="importSheet">استيراد من Google Sheets</button>
         </div>
       </section>
     </div>
@@ -696,7 +719,7 @@ function renderUsers() {
         <div class="section"><h2>الحسابات</h2></div>
         <div class="table-wrap">
           <table><thead><tr><th>الاسم</th><th>المستخدم</th><th>الدور</th><th>المستودع</th><th>تحكم</th></tr></thead>
-          <tbody>${state.users.map((u) => `<tr><td>${u.name}</td><td>${u.username}</td><td>${u.role}</td><td>${warehouseName(u.warehouseId)}</td><td><button class="btn" data-action="changePassword" data-id="${u.id}">كلمة المرور</button></td></tr>`).join("")}</tbody></table>
+          <tbody>${state.users.map((u) => `<tr><td>${u.name}</td><td>${u.username}</td><td>${u.role}</td><td>${warehouseName(u.warehouseId)}</td><td><div class="actions"><button class="btn" data-action="changeUsername" data-id="${u.id}">اسم المستخدم</button><button class="btn" data-action="changePassword" data-id="${u.id}">كلمة المرور</button></div></td></tr>`).join("")}</tbody></table>
         </div>
       </section>
     </div>
@@ -769,6 +792,7 @@ function bindView() {
   bindFilters();
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
   document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
+  if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
   document.querySelectorAll("[data-action='removeDraft']").forEach((b) => b.addEventListener("click", () => { transferDraft.splice(Number(b.dataset.index), 1); render(); }));
   document.querySelectorAll("[data-action='receiveTransfer']").forEach((b) => b.addEventListener("click", () => receiveTransfer(b.dataset.id)));
@@ -781,11 +805,13 @@ function bindView() {
   document.querySelector("[data-action='stopScanner']")?.addEventListener("click", stopScanner);
   document.getElementById("itemForm")?.addEventListener("submit", createItem);
   document.querySelector("[data-action='importItems']")?.addEventListener("click", importItems);
+  document.querySelector("[data-action='importSheet']")?.addEventListener("click", importSheet);
   document.querySelector("[data-action='readAll']")?.addEventListener("click", readAll);
   document.querySelector("[data-action='backup']")?.addEventListener("click", backup);
   document.querySelector("[data-action='restore']")?.addEventListener("click", restore);
   document.getElementById("alertForm")?.addEventListener("submit", saveAlerts);
   document.getElementById("userForm")?.addEventListener("submit", createUser);
+  document.querySelectorAll("[data-action='changeUsername']").forEach((b) => b.addEventListener("click", () => changeUsername(b.dataset.id)));
   document.querySelectorAll("[data-action='changePassword']").forEach((b) => b.addEventListener("click", () => changePassword(b.dataset.id)));
 }
 
@@ -812,25 +838,32 @@ function bindFilters() {
 }
 
 function updateUnitOptions() {
-  const barcode = document.getElementById("barcodeInput").value;
+  const barcode = document.getElementById("barcodeInput").value.trim();
   const select = document.getElementById("unitSelect");
+  const matchText = document.getElementById("barcodeMatchText");
   const matches = itemByBarcode(barcode);
   select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.name} - ${item.unit}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
+  if (matchText) {
+    matchText.textContent = matches.length ? `تم العثور على ${matches.length} وحدة: ${[...new Set(matches.map((item) => item.unit))].join("، ")}` : "";
+  }
 }
 
-function addDraftLine() {
+function addDraftLine(options = {}) {
   const barcode = document.getElementById("barcodeInput").value.trim();
   const itemId = document.getElementById("unitSelect").value;
   const qty = Number(document.getElementById("qtyInput").value);
   const item = state.items.find((entry) => entry.id === itemId);
   if (!barcode || !item || qty <= 0) {
-    toast("أدخل باركود صحيح ووحدة وكمية");
-    return;
+    if (!options.silent) toast("أدخل باركود صحيح ووحدة وكمية");
+    return false;
   }
   transferDraft.push({ itemId: item.id, barcode, name: item.name, unit: item.unit, sentQty: qty, receivedQty: qty });
+  client.scannedBarcode = "";
+  saveClient();
   document.getElementById("barcodeInput").value = "";
   document.getElementById("qtyInput").value = 1;
-  render();
+  if (!options.silent) render();
+  return true;
 }
 
 async function createTransfer(event) {
@@ -843,8 +876,11 @@ async function createTransfer(event) {
     return;
   }
   if (!transferDraft.length) {
-    toast("أضف صنف واحد على الأقل");
-    return;
+    addDraftLine({ silent: true });
+    if (!transferDraft.length) {
+      toast("أضف صنف واحد على الأقل");
+      return;
+    }
   }
   const receiverId = state.warehouses.find((w) => w.id === toWarehouseId)?.keeperId || "admin";
   const transfer = {
@@ -952,10 +988,32 @@ async function importItems() {
   const file = document.getElementById("importFile")?.files?.[0];
   let text = document.getElementById("importText").value;
   if (file) text = await file.text();
-  const rows = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  rows.forEach((row) => {
-    const parts = row.includes("\t") ? row.split("\t") : row.split(",");
-    if (parts.length < 4 || parts[0].includes("الباركود")) return;
+  await importItemsFromText(text);
+}
+
+async function importSheet() {
+  const url = document.getElementById("sheetUrl")?.value.trim();
+  if (!url) {
+    toast("ضع رابط Google Sheets أولًا");
+    return;
+  }
+  try {
+    const response = await fetch(toGoogleCsvUrl(url));
+    if (!response.ok) throw new Error("sheet");
+    const text = await response.text();
+    await importItemsFromText(text);
+  } catch {
+    toast("تعذر استيراد الشيت. تأكد أن الرابط متاح للقراءة أو منشور CSV");
+  }
+}
+
+async function importItemsFromText(text) {
+  const rows = parseImportRows(text);
+  if (!rows.length) {
+    toast("لا توجد أصناف صالحة للاستيراد");
+    return;
+  }
+  rows.forEach((parts) => {
     const [barcodes, name, unit, qty] = parts;
     const stock = {};
     state.warehouses.forEach((w) => stock[w.id] = 0);
@@ -968,12 +1026,61 @@ async function importItems() {
   toast("تم استيراد الأصناف إلى المستودع الرئيسي");
 }
 
+function parseImportRows(text = "") {
+  const rows = text.includes("\t") ? text.split(/\r?\n/).map((line) => line.split("\t")) : parseCsv(text);
+  return rows
+    .map((row) => row.map((cell) => String(cell || "").trim()))
+    .filter((row) => row.length >= 3 && row[0] && row[1] && row[2] && !row[0].includes("الباركود"));
+}
+
+function parseCsv(text = "") {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const next = text[i + 1];
+    if (char === '"' && quoted && next === '"') {
+      cell += '"';
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      row.push(cell);
+      cell = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") i += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+function toGoogleCsvUrl(url) {
+  const match = url.match(/\/spreadsheets\/d\/([^/]+)/);
+  if (!match) return url;
+  const gid = url.match(/[?&]gid=([^&]+)/)?.[1] || "0";
+  return `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${gid}`;
+}
+
 async function openScanner() {
   if (!navigator.mediaDevices?.getUserMedia) {
     toast("الكاميرا غير مدعومة في هذا المتصفح");
     return;
   }
+  scannerOpen = true;
+  render();
+  await new Promise((resolve) => setTimeout(resolve, 120));
   const video = document.getElementById("scannerVideo");
+  if (!video) return;
   scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
   video.srcObject = scannerStream;
   await video.play();
@@ -986,10 +1093,13 @@ async function openScanner() {
     if (!scannerStream) return;
     const codes = await detector.detect(video).catch(() => []);
     if (codes.length) {
-      document.getElementById("barcodeInput").value = codes[0].rawValue;
-      updateUnitOptions();
+      client.scannedBarcode = codes[0].rawValue;
+      saveClient();
       navigator.vibrate?.(80);
       toast(`تم قراءة الباركود ${codes[0].rawValue}`);
+      stopScanner();
+      setTimeout(() => document.getElementById("qtyInput")?.focus(), 100);
+      return;
     }
     requestAnimationFrame(scan);
   };
@@ -999,6 +1109,8 @@ async function openScanner() {
 function stopScanner() {
   scannerStream?.getTracks().forEach((track) => track.stop());
   scannerStream = null;
+  scannerOpen = false;
+  render();
 }
 
 async function readAll() {
@@ -1063,10 +1175,15 @@ async function saveAlerts(event) {
 
 async function createUser(event) {
   event.preventDefault();
+  const username = document.getElementById("newUsername").value.trim().toUpperCase();
+  if (state.users.some((u) => u.username === username)) {
+    toast("اسم المستخدم موجود بالفعل");
+    return;
+  }
   const user = {
     id: `user-${Date.now()}`,
     name: document.getElementById("newName").value,
-    username: document.getElementById("newUsername").value.trim().toUpperCase(),
+    username,
     password: document.getElementById("newPassword").value,
     role: document.getElementById("newRole").value,
     warehouseId: document.getElementById("newWarehouse").value || null,
@@ -1078,6 +1195,20 @@ async function createUser(event) {
     if (warehouse) warehouse.keeperId = user.id;
   }
   addActivity(`إضافة مستخدم ${user.name}`);
+  await persist();
+  render();
+}
+
+async function changeUsername(id) {
+  const user = state.users.find((u) => u.id === id);
+  const username = prompt(`اسم مستخدم جديد لـ ${user.name}`, user.username)?.trim().toUpperCase();
+  if (!username || username === user.username) return;
+  if (state.users.some((u) => u.id !== id && u.username === username)) {
+    toast("اسم المستخدم موجود بالفعل");
+    return;
+  }
+  user.username = username;
+  addActivity(`تعديل اسم مستخدم ${user.name}`);
   await persist();
   render();
 }
