@@ -216,7 +216,7 @@ function render() {
   app.innerHTML = `
     <div class="shell ${menuOpen ? "menu-open" : ""}">
       <header class="mobile-head">
-        <button class="menu-toggle" data-action="toggleMenu" aria-label="فتح القائمة">☰</button>
+        <button class="menu-toggle" data-action="toggleMenu" aria-label="فتح القائمة">⋮</button>
         <div>
           <b>مخازن التخزين المؤقت</b>
           <span>${user.role === "admin" ? "الأدمن" : warehouseName(user.warehouseId)}</span>
