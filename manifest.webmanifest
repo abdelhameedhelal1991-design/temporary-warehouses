@@ -1,0 +1,33 @@
+{
+  "name": "مخازن التخزين المؤقت",
+  "short_name": "المخازن",
+  "description": "تطبيق إدارة المخازن والتحويلات بين المستودعات.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "ar",
+  "orientation": "portrait",
+  "background_color": "#f5f6f8",
+  "theme_color": "#f26b1d",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "تحويل جديد",
+      "url": "/?view=transfers",
+      "description": "إنشاء تحويل بين المستودعات"
+    },
+    {
+      "name": "الأرصدة",
+      "url": "/?view=stock",
+      "description": "عرض أرصدة المخزون"
+    }
+  ]
+}

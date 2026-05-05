@@ -44,7 +44,7 @@ const EMPTY_STATE = {
 
 let state = clone(EMPTY_STATE);
 let client = loadClient();
-let view = client.view || "dashboard";
+let view = new URLSearchParams(window.location.search).get("view") || client.view || "dashboard";
 let transferDraft = [];
 let scannerStream = null;
 
@@ -1076,8 +1076,16 @@ async function changePassword(id) {
 
 async function init() {
   app.innerHTML = `<div class="splash"><div class="loader"></div></div>`;
+  registerServiceWorker();
   if (client.token) await loadState();
   render();
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
 }
 
 init();
