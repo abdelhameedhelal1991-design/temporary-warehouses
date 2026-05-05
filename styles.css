@@ -578,13 +578,12 @@ video {
     background: #171a20;
     color: #fff;
     box-shadow: -18px 0 44px rgba(0, 0, 0, 0.24);
-    transform: translateX(105%);
-    transition: transform 0.22s ease;
+    display: none;
     overflow-y: auto;
   }
 
   .shell.menu-open .side {
-    transform: translateX(0);
+    display: flex;
   }
 
   .menu-backdrop {
