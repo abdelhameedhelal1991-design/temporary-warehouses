@@ -59,7 +59,7 @@ function readJsonBody(request) {
     let body = "";
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 2_000_000) {
+      if (body.length > 60_000_000) {
         request.destroy();
         reject(new Error("Request body is too large"));
       }

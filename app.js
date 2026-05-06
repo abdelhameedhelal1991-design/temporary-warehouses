@@ -128,9 +128,9 @@ async function loadState() {
 }
 
 async function persist() {
-  if (!client.token) return;
+  if (!client.token) return false;
   try {
-    await fetch("/api/state", {
+    const response = await fetch("/api/state", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -138,8 +138,11 @@ async function persist() {
       },
       body: JSON.stringify(state)
     });
+    if (!response.ok) throw new Error(`save failed: ${response.status}`);
+    return true;
   } catch {
     toast("تعذر الاتصال بالسيرفر، راجع تشغيل server.js");
+    return false;
   }
 }
 
@@ -203,7 +206,17 @@ function toast(message) {
   el.className = "toast";
   el.textContent = message;
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2800);
+  setTimeout(() => el.remove(), 4200);
+}
+
+function importStatus(message, type = "") {
+  const status = document.getElementById("importStatus");
+  if (!status) {
+    toast(message);
+    return;
+  }
+  status.className = `muted import-status ${type}`;
+  status.textContent = message;
 }
 
 function moneylessNumber(value) {
@@ -622,11 +635,14 @@ function stockRows() {
 function stockTable() {
   const warehouses = client.stockWarehouse ? state.warehouses.filter((w) => w.id === client.stockWarehouse) : state.warehouses;
   const rows = stockRows();
+  const visibleRows = rows.slice(0, 300);
+  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
   return `
+    ${hiddenCount ? `<p class="muted">يتم عرض أول ${moneylessNumber(visibleRows.length)} صنف فقط من ${moneylessNumber(rows.length)} للحفاظ على سرعة الموبايل. استخدم البحث للوصول لأي صنف.</p>` : ""}
     <div class="table-wrap">
       <table>
         <thead><tr><th>الباركود</th><th>الصنف</th><th>الوحدة</th>${warehouses.map((w) => `<th>${w.name}</th>`).join("")}<th>تنبيه</th></tr></thead>
-        <tbody>${rows.map((item) => {
+        <tbody>${visibleRows.map((item) => {
           const low = warehouses.some((w) => Number(item.stock[w.id] || 0) <= Number(w.minAlert || 0));
           return `<tr>
             <td>${item.barcodes.join(";")}</td><td>${item.name}</td><td>${item.unit}</td>
@@ -671,9 +687,10 @@ function renderItems() {
         </div>
         <div class="actions" style="margin-top:10px">
           <input id="importFile" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" />
-          <button class="btn primary" data-action="importItems">استيراد ملف Excel</button>
-          <button class="btn" data-action="importSheet">استيراد Google Sheets كـ Excel</button>
+          <button class="btn primary" data-action="importItems" type="button">استيراد ملف Excel</button>
+          <button class="btn" data-action="importSheet" type="button">استيراد Google Sheets كـ Excel</button>
         </div>
+        <p id="importStatus" class="muted import-status">جاهز للاستيراد.</p>
       </section>
     </div>
     <section class="card" style="margin-top:14px">
@@ -1090,34 +1107,72 @@ async function createItem(event) {
   render();
 }
 
-async function importItems() {
+async function importItems(event) {
+  event?.preventDefault();
+  const button = event?.currentTarget;
+  const oldText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "جاري الاستيراد...";
+  }
+  importStatus("جاري قراءة ملف Excel...");
   const file = document.getElementById("importFile")?.files?.[0];
-  if (file) {
-    const ext = file.name.split(".").pop().toLowerCase();
-    if (["xlsx", "xls"].includes(ext)) {
-      await importItemsFromRows(await excelRowsFromArrayBuffer(await file.arrayBuffer()));
+  try {
+    if (file) {
+      const ext = file.name.split(".").pop().toLowerCase();
+      if (["xlsx", "xls"].includes(ext)) {
+        await importItemsFromRows(await excelRowsFromArrayBuffer(await file.arrayBuffer()));
+        return;
+      }
+      await importItemsFromText(await file.text());
       return;
     }
-    await importItemsFromText(await file.text());
-    return;
+    await importItemsFromText(document.getElementById("importText").value);
+  } catch (error) {
+    importStatus(`تعذر الاستيراد: ${error.message || "خطأ غير معروف"}`, "error");
+    toast("تعذر الاستيراد. راجع صيغة الملف أو الرابط");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
   }
-  await importItemsFromText(document.getElementById("importText").value);
 }
 
-async function importSheet() {
+async function importSheet(event) {
+  event?.preventDefault();
   const url = document.getElementById("sheetUrl")?.value.trim();
   if (!url) {
     toast("ضع رابط Google Sheets أولًا");
+    importStatus("ضع رابط Google Sheets أولًا", "error");
     return;
   }
+  const button = event?.currentTarget;
+  const oldText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "جاري تحميل الشيت...";
+  }
   try {
+    importStatus("جاري تحميل Google Sheets كملف Excel...");
     const response = await fetch(`/api/google-sheet-excel?url=${encodeURIComponent(url)}`, {
       headers: authHeaders()
     });
-    if (!response.ok) throw new Error("sheet");
-    await importItemsFromRows(await excelRowsFromArrayBuffer(await response.arrayBuffer()));
-  } catch {
-    toast("تعذر استيراد الشيت. تأكد أن رابط Google Sheets متاح لأي شخص لديه الرابط");
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(errorText || `خطأ من السيرفر ${response.status}`);
+    }
+    importStatus("تم تحميل الشيت. جاري قراءة الأصناف...");
+    const rows = await excelRowsFromArrayBuffer(await response.arrayBuffer());
+    await importItemsFromRows(rows);
+  } catch (error) {
+    importStatus(`تعذر استيراد الشيت: ${error.message || "تأكد أن الرابط متاح لأي شخص لديه الرابط"}`, "error");
+    toast("تعذر استيراد الشيت. تأكد أن الرابط Google Sheets عام");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
   }
 }
 
@@ -1127,9 +1182,11 @@ async function importItemsFromText(text) {
 
 async function importItemsFromRows(rows) {
   if (!rows.length) {
+    importStatus("لا توجد أصناف صالحة للاستيراد. تأكد أن الأعمدة: الباركود، اسم الصنف، الوحدة، الكمية اختيارية", "error");
     toast("لا توجد أصناف صالحة للاستيراد");
     return;
   }
+  importStatus(`تم العثور على ${moneylessNumber(rows.length)} صنف. جاري الحفظ...`);
   rows.forEach((parts) => {
     const [barcodes, name, unit, qty] = parts;
     const stock = {};
@@ -1138,9 +1195,13 @@ async function importItemsFromRows(rows) {
     state.items.push({ id: `itm-${Date.now()}-${Math.random().toString(16).slice(2)}`, barcodes: splitBarcodes(barcodes), name: name.trim(), unit: unit.trim(), stock });
   });
   addActivity("استيراد أصناف");
-  await persist();
+  const saved = await persist();
+  if (!saved) {
+    importStatus("تمت قراءة الأصناف لكن تعذر حفظها على السيرفر. حاول مرة أخرى أو قلل حجم الملف.", "error");
+    return;
+  }
   render();
-  toast("تم استيراد الأصناف إلى المستودع الرئيسي");
+  toast(`تم استيراد ${moneylessNumber(rows.length)} صنف إلى المستودع الرئيسي`);
 }
 
 async function excelRowsFromArrayBuffer(buffer) {
@@ -1150,6 +1211,7 @@ async function excelRowsFromArrayBuffer(buffer) {
   }
   const workbook = XLSX.read(buffer, { type: "array" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) return [];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
   return normalizeImportRows(rows);
 }
