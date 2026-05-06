@@ -182,6 +182,37 @@ function normalizeSearchText(value) {
     .trim();
 }
 
+function allUnits() {
+  return [...new Set(state.items.map((item) => String(item.unit || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function searchWordMatches(word, tokens, fullText) {
+  if (!word) return true;
+  return tokens.some((token) => token.startsWith(word) || token.includes(word)) || fullText.includes(word);
+}
+
+function itemSearchScore(item, query, words) {
+  const name = normalizeSearchText(item.name);
+  const unit = normalizeSearchText(item.unit);
+  const barcodes = (item.barcodes || []).map((barcode) => String(barcode).trim());
+  const barcodeText = barcodes.join(" ");
+  const fullText = `${name} ${unit} ${barcodeText}`;
+  const tokens = fullText.split(/\s+/).filter(Boolean);
+  const exactBarcode = barcodes.some((barcode) => barcode === query);
+  const barcodeStarts = barcodes.some((barcode) => barcode.startsWith(query));
+  const wordsMatch = words.every((word) => searchWordMatches(word, tokens, fullText));
+  if (!exactBarcode && !barcodeStarts && !wordsMatch) return 0;
+  return (
+    (exactBarcode ? 120 : 0) +
+    (barcodeStarts ? 80 : 0) +
+    (name === query ? 70 : 0) +
+    (name.startsWith(query) ? 55 : 0) +
+    (wordsMatch ? 45 : 0) +
+    words.reduce((sum, word) => sum + (tokens.some((token) => token.startsWith(word)) ? 6 : 2), 0) -
+    Math.max(0, name.length - query.length) / 1000
+  );
+}
+
 function splitBarcodes(value) {
   return String(value || "")
     .split(/[;,،\n\r]+/)
@@ -464,9 +495,12 @@ function transferForm() {
         <input id="barcodeInput" placeholder="امسح أو اكتب الباركود" value="${client.scannedBarcode || ""}" />
       </div>
       <div class="field">
-        <label>الوحدة</label>
+        <label>اسم الصنف</label>
         <select id="unitSelect"><option value="">اختر الصنف أو اكتب الباركود أولًا</option></select>
-        <div id="barcodeMatchText" class="hint mini"></div>
+      </div>
+      <div class="field">
+        <label>الوحدة</label>
+        <select id="globalUnitSelect">${allUnits().map((unit) => `<option value="${unit}">${unit}</option>`).join("")}</select>
       </div>
       <div class="field">
         <label>الكمية</label>
@@ -877,6 +911,7 @@ function bindView() {
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
   document.getElementById("itemSearchInput")?.addEventListener("input", updateItemSearchResults);
   document.getElementById("itemSearchResults")?.addEventListener("change", selectSearchedItem);
+  document.getElementById("unitSelect")?.addEventListener("change", syncUnitWithSelectedItem);
   document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
   if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
@@ -929,14 +964,12 @@ function bindFilters() {
 function updateUnitOptions() {
   const barcode = document.getElementById("barcodeInput").value.trim();
   const select = document.getElementById("unitSelect");
-  const matchText = document.getElementById("barcodeMatchText");
+  const unitSelect = document.getElementById("globalUnitSelect");
   const matches = itemByBarcode(barcode);
-  select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.unit}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
-  if (matchText) {
-    const itemNames = [...new Set(matches.map((item) => item.name))].join("، ");
-    const units = [...new Set(matches.map((item) => item.unit))].join("، ");
-    matchText.textContent = matches.length ? `الصنف: ${itemNames} | الوحدات المتاحة: ${units}` : "";
-  }
+  select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.name}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
+  const units = matches.length ? [...new Set(matches.map((item) => item.unit))] : allUnits();
+  if (unitSelect) unitSelect.innerHTML = units.map((unit) => `<option value="${unit}">${unit}</option>`).join("");
+  syncUnitWithSelectedItem();
 }
 
 function updateItemSearchResults() {
@@ -950,24 +983,10 @@ function updateItemSearchResults() {
   const words = query.split(/\s+/).filter(Boolean);
   const matches = state.items
     .map((item) => {
-      const name = normalizeSearchText(item.name);
-      const unit = normalizeSearchText(item.unit);
-      const barcodes = (item.barcodes || []).map((barcode) => String(barcode).trim());
-      const exactBarcode = barcodes.some((barcode) => barcode === query);
-      const barcodeStarts = barcodes.some((barcode) => barcode.startsWith(query));
-      const allWordsMatchName = words.every((word) => name.includes(word));
-      const allWordsMatchCombined = words.every((word) => `${name} ${unit} ${barcodes.join(" ")}`.includes(word));
-      const starts = name.startsWith(query);
-      const score =
-        (exactBarcode ? 100 : 0) +
-        (barcodeStarts ? 60 : 0) +
-        (starts ? 45 : 0) +
-        (allWordsMatchName ? 35 : 0) +
-        (allWordsMatchCombined ? 15 : 0) -
-        Math.max(0, name.length - query.length) / 1000;
+      const score = itemSearchScore(item, query, words);
       return { item, score };
     })
-    .filter((row) => row.score >= 15)
+    .filter((row) => row.score > 0)
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
     .slice(0, 20)
     .map((row) => row.item);
@@ -982,14 +1001,36 @@ function selectSearchedItem() {
   document.getElementById("barcodeInput").value = item.barcodes[0] || "";
   updateUnitOptions();
   document.getElementById("unitSelect").value = item.id;
+  const unitSelect = document.getElementById("globalUnitSelect");
+  if (unitSelect) unitSelect.value = item.unit;
   document.getElementById("qtyInput")?.focus();
+}
+
+function syncUnitWithSelectedItem() {
+  const item = state.items.find((entry) => entry.id === document.getElementById("unitSelect")?.value);
+  const unitSelect = document.getElementById("globalUnitSelect");
+  if (item && unitSelect) unitSelect.value = item.unit;
+}
+
+function itemForSelectedUnit(selectedItem, selectedUnit, barcode) {
+  if (!selectedItem) return null;
+  if (!selectedUnit || selectedItem.unit === selectedUnit) return selectedItem;
+  const code = String(barcode || "").trim();
+  return state.items.find((item) => {
+    const sameName = normalizeSearchText(item.name) === normalizeSearchText(selectedItem.name);
+    const sameUnit = item.unit === selectedUnit;
+    const sameBarcode = !code || (item.barcodes || []).some((entry) => String(entry).trim() === code);
+    return sameName && sameUnit && sameBarcode;
+  }) || state.items.find((item) => normalizeSearchText(item.name) === normalizeSearchText(selectedItem.name) && item.unit === selectedUnit) || selectedItem;
 }
 
 function addDraftLine(options = {}) {
   const barcode = document.getElementById("barcodeInput").value.trim();
   const itemId = document.getElementById("unitSelect").value;
+  const selectedUnit = document.getElementById("globalUnitSelect")?.value;
   const qty = Number(document.getElementById("qtyInput").value);
-  const item = state.items.find((entry) => entry.id === itemId);
+  const selectedItem = state.items.find((entry) => entry.id === itemId);
+  const item = itemForSelectedUnit(selectedItem, selectedUnit, barcode);
   if (!barcode || !item || qty <= 0) {
     if (!options.silent) toast("أدخل باركود صحيح ووحدة وكمية");
     return false;
