@@ -50,6 +50,8 @@ let scannerStream = null;
 let scannerOpen = false;
 let menuOpen = false;
 let refreshTimer = null;
+let searchTimer = null;
+let searchCache = { items: null, rows: [], barcodeMap: new Map(), unitsByName: new Map() };
 
 const app = document.getElementById("app");
 
@@ -118,11 +120,14 @@ async function loadState() {
       client.userId = null;
       saveClient();
       state = normalizeState(null);
+      invalidateSearchCache();
       return;
     }
     state = normalizeState(await response.json());
+    invalidateSearchCache();
   } catch {
     state = normalizeState(null);
+    invalidateSearchCache();
   }
   document.body.classList.toggle("dark", !!state.settings.dark);
 }
@@ -144,6 +149,19 @@ async function persist() {
     toast("تعذر الاتصال بالسيرفر، راجع تشغيل server.js");
     return false;
   }
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders()
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error(await response.text().catch(() => `request failed: ${response.status}`));
+  return response.json();
 }
 
 function authHeaders() {
@@ -168,7 +186,8 @@ function userName(id) {
 
 function itemByBarcode(barcode) {
   const code = String(barcode || "").trim();
-  return state.items.filter((item) => (item.barcodes || []).some((entry) => String(entry).trim() === code));
+  if (!code) return [];
+  return buildSearchIndex().barcodeMap.get(code) || [];
 }
 
 function normalizeSearchText(value) {
@@ -194,18 +213,42 @@ function allUnits() {
   return [...new Set(state.items.map((item) => String(item.unit || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function invalidateSearchCache() {
+  searchCache = { items: null, rows: [], barcodeMap: new Map(), unitsByName: new Map() };
+}
+
+function buildSearchIndex() {
+  if (searchCache.items === state.items) return searchCache;
+  const rows = [];
+  const barcodeMap = new Map();
+  const unitsByName = new Map();
+  state.items.forEach((item) => {
+    const name = normalizeSearchText(item.name);
+    const unit = normalizeSearchText(item.unit);
+    const barcodes = (item.barcodes || []).map((barcode) => String(barcode).trim()).filter(Boolean);
+    const barcodeText = barcodes.join(" ");
+    const fullText = `${name} ${unit} ${barcodeText}`;
+    const tokens = fullText.split(/\s+/).filter(Boolean);
+    rows.push({ item, name, unit, barcodes, barcodeText, fullText, tokens });
+    barcodes.forEach((barcode) => {
+      if (!barcodeMap.has(barcode)) barcodeMap.set(barcode, []);
+      barcodeMap.get(barcode).push(item);
+    });
+    if (!unitsByName.has(name)) unitsByName.set(name, []);
+    unitsByName.get(name).push({ id: item.id, unit: item.unit, barcode: barcodes[0] || "" });
+  });
+  unitsByName.forEach((entries) => entries.sort((a, b) => String(a.unit || "").localeCompare(String(b.unit || ""))));
+  searchCache = { items: state.items, rows, barcodeMap, unitsByName };
+  return searchCache;
+}
+
 function searchWordMatches(word, tokens, fullText) {
   if (!word) return true;
   return tokens.some((token) => token.startsWith(word) || token.includes(word)) || fullText.includes(word);
 }
 
-function itemSearchScore(item, query, words) {
-  const name = normalizeSearchText(item.name);
-  const unit = normalizeSearchText(item.unit);
-  const barcodes = (item.barcodes || []).map((barcode) => String(barcode).trim());
-  const barcodeText = barcodes.join(" ");
-  const fullText = `${name} ${unit} ${barcodeText}`;
-  const tokens = fullText.split(/\s+/).filter(Boolean);
+function itemSearchScore(row, query, words) {
+  const { name, fullText, tokens, barcodes } = row;
   const exactBarcode = barcodes.some((barcode) => barcode === query);
   const barcodeStarts = barcodes.some((barcode) => barcode.startsWith(query));
   const wordsMatch = words.every((word) => searchWordMatches(word, tokens, fullText));
@@ -378,6 +421,7 @@ async function login() {
 
     const result = await response.json();
     state = normalizeState(result.state);
+    invalidateSearchCache();
     client.token = result.token;
     client.userId = result.user.id;
     client.view = "dashboard";
@@ -918,7 +962,7 @@ function bindCommon() {
 function bindView() {
   bindFilters();
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
-  document.getElementById("itemNameInput")?.addEventListener("input", () => updateItemNameSuggestions());
+  document.getElementById("itemNameInput")?.addEventListener("input", scheduleItemNameSuggestions);
   document.getElementById("itemNameInput")?.addEventListener("change", selectItemFromNameInput);
   document.getElementById("itemNameInput")?.addEventListener("blur", () => setTimeout(() => updateItemNameSuggestions(true), 160));
   document.getElementById("itemNameInput")?.addEventListener("keydown", (event) => {
@@ -1013,10 +1057,10 @@ function smartItemMatches(queryText) {
   const query = normalizeSearchText(queryText);
   if (!query) return [];
   const words = query.split(/\s+/).filter(Boolean);
-  return state.items
-    .map((item) => {
-      const score = itemSearchScore(item, query, words);
-      return { item, score };
+  return buildSearchIndex().rows
+    .map((row) => {
+      const score = itemSearchScore(row, query, words);
+      return { item: row.item, score };
     })
     .filter((row) => row.score > 0)
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
@@ -1027,10 +1071,12 @@ function smartItemMatches(queryText) {
 function itemUnitsByName(item) {
   if (!item) return [];
   const normalizedName = normalizeSearchText(item.name);
-  return state.items
-    .filter((entry) => normalizeSearchText(entry.name) === normalizedName)
-    .sort((a, b) => String(a.unit || "").localeCompare(String(b.unit || "")))
-    .map((entry) => ({ id: entry.id, unit: entry.unit, barcode: (entry.barcodes || [])[0] || "" }));
+  return buildSearchIndex().unitsByName.get(normalizedName) || [];
+}
+
+function scheduleItemNameSuggestions() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => updateItemNameSuggestions(), 90);
 }
 
 function updateUnitsForItem(item, preferredUnit = "") {
@@ -1061,7 +1107,6 @@ function updateItemNameSuggestions(forceHide = false) {
   document.getElementById("barcodeInput").value = "";
   updateUnitsForItem(null);
   updateSelectedItemSummary(null);
-  const matches = smartItemMatches(input.value);
   if (!input.value.trim()) {
     list.innerHTML = "";
     return;
@@ -1071,6 +1116,7 @@ function updateItemNameSuggestions(forceHide = false) {
     selectItemById(barcodeMatches[0].id);
     return;
   }
+  const matches = smartItemMatches(input.value);
   const uniqueByName = [];
   const seen = new Set();
   matches.forEach((item) => {
@@ -1231,15 +1277,19 @@ async function createTransfer(event) {
     text: `تحويل جديد من ${warehouseName(fromWarehouseId)} إلى ${warehouseName(toWarehouseId)}`
   });
   transferDraft = [];
-  await persist();
-  await loadState();
-  client.view = "transfers";
-  client.filterStatus = "pending";
-  client.filterWarehouse = toWarehouseId;
-  saveClient();
-  render();
-  toast(`تم إرسال التحويل بنجاح رقم ${transfer.id}`);
-  alert(`تم إرسال التحويل بنجاح\nرقم الإذن: ${transfer.id}`);
+  try {
+    await postJson("/api/transfer", { transfer });
+    client.view = "transfers";
+    client.filterStatus = "pending";
+    client.filterWarehouse = toWarehouseId;
+    saveClient();
+    render();
+    toast(`تم إرسال التحويل بنجاح رقم ${transfer.id}`);
+  } catch {
+    await persist();
+    render();
+    toast(`تم إرسال التحويل بنجاح رقم ${transfer.id}`);
+  }
 }
 
 function openReceive(id) {
@@ -1271,9 +1321,15 @@ async function confirmReceive(event) {
   addActivity(`اعتماد استلام التحويل ${transfer.id}`, transfer);
   state.notifications.unshift({ id: `n-${Date.now()}`, userId: transfer.createdBy, warehouseId: transfer.fromWarehouseId, transferId: transfer.id, read: false, readBy: {}, text: `تم اعتماد استلام التحويل ${transfer.id}` });
   client.receiveTransferId = "";
-  await persist();
-  render();
-  toast("تم اعتماد الاستلام وتحديث الأرصدة");
+  try {
+    await postJson("/api/receive", { transferId: transfer.id, lines: transfer.lines, approvedAt: transfer.approvedAt });
+    render();
+    toast("تم اعتماد الاستلام وتحديث الأرصدة");
+  } catch {
+    await persist();
+    render();
+    toast("تم اعتماد الاستلام وتحديث الأرصدة");
+  }
 }
 
 function applyTransfer(transfer) {
@@ -1321,6 +1377,7 @@ async function createItem(event) {
   };
   state.warehouses.forEach((w) => item.stock[w.id] = Number(document.getElementById(`stock-${w.id}`).value || 0));
   state.items.push(item);
+  invalidateSearchCache();
   addActivity(`إضافة صنف ${item.name}`);
   await persist();
   render();
@@ -1413,6 +1470,7 @@ async function importItemsFromRows(rows) {
     stock.main = Number(qty || 0);
     state.items.push({ id: `itm-${Date.now()}-${Math.random().toString(16).slice(2)}`, barcodes: splitBarcodes(barcodes), name: name.trim(), unit: unit.trim(), stock });
   });
+  invalidateSearchCache();
   addActivity("استيراد أصناف");
   const saved = await persist();
   if (!saved) {
@@ -1606,6 +1664,7 @@ async function restore() {
   if (!file) return toast("اختر ملف النسخة الاحتياطية");
   const text = await file.text();
   state = normalizeState(JSON.parse(text.replace(/^\ufeff/, "")));
+  invalidateSearchCache();
   await persist();
   render();
 }
@@ -1629,6 +1688,7 @@ async function resetSystem() {
     activity: [{ at: now(), by: user?.id || "admin", action: "تهيئة النظام من جديد" }],
     settings: { ...state.settings }
   };
+  invalidateSearchCache();
   transferDraft = [];
   client.filterText = "";
   client.filterWarehouse = "";

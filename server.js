@@ -140,6 +140,45 @@ function publicUser(user) {
   return safeUser;
 }
 
+function applyTransferToState(data, transfer) {
+  if (transfer.applied) return;
+  (transfer.lines || []).forEach((line) => {
+    const item = data.items?.find((entry) => entry.id === line.itemId);
+    if (!item) return;
+    const qty = Number(line.receivedQty ?? line.sentQty);
+    item.stock = item.stock || {};
+    item.stock[transfer.fromWarehouseId] = Number(item.stock[transfer.fromWarehouseId] || 0) - qty;
+    item.stock[transfer.toWarehouseId] = Number(item.stock[transfer.toWarehouseId] || 0) + qty;
+  });
+  transfer.applied = true;
+}
+
+function mergeTransfer(data, transfer) {
+  data.transfers = Array.isArray(data.transfers) ? data.transfers : [];
+  const index = data.transfers.findIndex((entry) => entry.id === transfer.id);
+  if (index === -1) {
+    data.transfers.unshift(transfer);
+  } else {
+    data.transfers[index] = { ...data.transfers[index], ...transfer };
+  }
+}
+
+function mergeNotification(data, notification) {
+  if (!notification) return;
+  data.notifications = Array.isArray(data.notifications) ? data.notifications : [];
+  if (!data.notifications.some((entry) => entry.id === notification.id)) {
+    data.notifications.unshift(notification);
+  }
+}
+
+function mergeActivity(data, activity) {
+  if (!activity) return;
+  data.activity = Array.isArray(data.activity) ? data.activity : [];
+  if (!data.activity.some((entry) => entry.at === activity.at && entry.action === activity.action)) {
+    data.activity.unshift(activity);
+  }
+}
+
 function readDatabase() {
   if (!fs.existsSync(dbPath)) return null;
   return JSON.parse(fs.readFileSync(dbPath, "utf8"));
@@ -315,6 +354,62 @@ const server = http.createServer(async (request, response) => {
       const data = await readJsonBody(request);
       await writeAppState(data);
       send(response, 200, JSON.stringify({ ok: true }));
+    } catch (error) {
+      send(response, 400, JSON.stringify({ ok: false, error: error.message }));
+    }
+    return;
+  }
+
+  if (request.url === "/api/transfer" && request.method === "POST") {
+    if (!requireSession(request, response)) return;
+    try {
+      const body = await readJsonBody(request);
+      const transfer = body.transfer;
+      if (!transfer?.id || !Array.isArray(transfer.lines)) {
+        send(response, 400, JSON.stringify({ ok: false, error: "Invalid transfer" }));
+        return;
+      }
+      const data = await readAppState();
+      mergeTransfer(data, transfer);
+      mergeNotification(data, (data.notifications || []).find((entry) => entry.transferId === transfer.id) || {
+        id: `n-${Date.now()}`,
+        userId: transfer.receiverId,
+        warehouseId: transfer.toWarehouseId,
+        transferId: transfer.id,
+        read: false,
+        readBy: {},
+        text: `تحويل جديد من ${transfer.fromWarehouseId} إلى ${transfer.toWarehouseId}`
+      });
+      mergeActivity(data, transfer.history?.[transfer.history.length - 1]);
+      await writeAppState(data);
+      send(response, 200, JSON.stringify({ ok: true, transfer }));
+    } catch (error) {
+      send(response, 400, JSON.stringify({ ok: false, error: error.message }));
+    }
+    return;
+  }
+
+  if (request.url === "/api/receive" && request.method === "POST") {
+    const session = requireSession(request, response);
+    if (!session) return;
+    try {
+      const body = await readJsonBody(request);
+      const data = await readAppState();
+      const transfer = data.transfers?.find((entry) => entry.id === body.transferId);
+      if (!transfer || transfer.status !== "pending") {
+        send(response, 404, JSON.stringify({ ok: false, error: "Transfer not found" }));
+        return;
+      }
+      transfer.lines = Array.isArray(body.lines) ? body.lines : transfer.lines;
+      transfer.status = "approved";
+      transfer.locked = true;
+      transfer.approvedAt = body.approvedAt || new Date().toISOString();
+      transfer.history = Array.isArray(transfer.history) ? transfer.history : [];
+      transfer.history.push({ at: transfer.approvedAt, by: session.userId, action: `اعتماد استلام التحويل ${transfer.id}` });
+      applyTransferToState(data, transfer);
+      mergeNotification(data, { id: `n-${Date.now()}`, userId: transfer.createdBy, warehouseId: transfer.fromWarehouseId, transferId: transfer.id, read: false, readBy: {}, text: `تم اعتماد استلام التحويل ${transfer.id}` });
+      await writeAppState(data);
+      send(response, 200, JSON.stringify({ ok: true, transfer }));
     } catch (error) {
       send(response, 400, JSON.stringify({ ok: false, error: error.message }));
     }
