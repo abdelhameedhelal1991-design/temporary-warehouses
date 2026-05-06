@@ -247,8 +247,6 @@ function render() {
           ${nav("receive", "الاستلام")}
           ${nav("stock", "الأرصدة")}
           ${nav("items", "الأصناف")}
-          ${nav("reports", "التقارير")}
-          ${nav("notifications", "الإشعارات")}
           ${nav("settings", "الإعدادات")}
           ${isAdmin() ? nav("users", "المستخدمون") : ""}
         </nav>
@@ -393,14 +391,6 @@ function renderTransfers() {
         <div class="section"><h2>تحويل جديد</h2><button class="btn blue" data-action="openScanner">فتح الكاميرا</button></div>
         ${transferForm()}
       </section>
-      <section class="card">
-        <div class="section"><h2>قارئ الباركود</h2></div>
-        <div class="camera">
-          <video id="scannerVideo" muted playsinline></video>
-          <button class="btn" data-action="stopScanner">إيقاف الكاميرا</button>
-          <span class="muted">يدعم BarcodeDetector في المتصفحات المتوافقة، ومعه إدخال يدوي سريع.</span>
-        </div>
-      </section>
     </div>
     <section class="card" style="margin-top:14px">
       <div class="section"><h2>كل التحويلات</h2></div>
@@ -439,6 +429,11 @@ function transferForm() {
       <div class="field">
         <label>إلى مستودع</label>
         <select id="toWarehouse">${toOptions}</select>
+      </div>
+      <div class="field full">
+        <label>بحث باسم الصنف</label>
+        <input id="itemSearchInput" placeholder="اكتب اسم الصنف أو جزء منه أو الباركود" />
+        <select id="itemSearchResults"><option value="">ابدأ البحث لاختيار صنف</option></select>
       </div>
       <div class="field">
         <label>باركود</label>
@@ -609,7 +604,7 @@ function renderStock() {
         <input id="stockSearch" placeholder="اسم الصنف أو الباركود" value="${client.stockSearch || ""}" />
         <select id="stockWarehouse"><option value="">كل المستودعات</option>${state.warehouses.map((w) => `<option value="${w.id}" ${client.stockWarehouse === w.id ? "selected" : ""}>${w.name}</option>`).join("")}</select>
         <button class="btn primary" data-action="exportStock">تصدير الأرصدة</button>
-        <button class="btn success" data-action="shareStockWhatsApp">مشاركة واتساب</button>
+        <button class="btn success" data-action="shareStockWhatsApp">مشاركة Excel واتساب</button>
       </div>
       ${stockTable()}
     </section>
@@ -845,6 +840,8 @@ function bindCommon() {
 function bindView() {
   bindFilters();
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
+  document.getElementById("itemSearchInput")?.addEventListener("input", updateItemSearchResults);
+  document.getElementById("itemSearchResults")?.addEventListener("change", selectSearchedItem);
   document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
   if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
@@ -858,7 +855,7 @@ function bindView() {
   document.querySelector("[data-action='exportStock']")?.addEventListener("click", exportStock);
   document.querySelector("[data-action='shareStockWhatsApp']")?.addEventListener("click", shareStockWhatsApp);
   document.querySelector("[data-action='openScanner']")?.addEventListener("click", openScanner);
-  document.querySelector("[data-action='stopScanner']")?.addEventListener("click", stopScanner);
+  document.querySelectorAll("[data-action='stopScanner']").forEach((button) => button.addEventListener("click", stopScanner));
   document.getElementById("itemForm")?.addEventListener("submit", createItem);
   document.querySelector("[data-action='importItems']")?.addEventListener("click", importItems);
   document.querySelector("[data-action='importSheet']")?.addEventListener("click", importSheet);
@@ -902,6 +899,39 @@ function updateUnitOptions() {
   if (matchText) {
     matchText.textContent = matches.length ? `تم العثور على ${matches.length} وحدة: ${[...new Set(matches.map((item) => item.unit))].join("، ")}` : "";
   }
+}
+
+function updateItemSearchResults() {
+  const query = document.getElementById("itemSearchInput").value.trim().toLowerCase();
+  const select = document.getElementById("itemSearchResults");
+  if (!select) return;
+  if (!query) {
+    select.innerHTML = `<option value="">ابدأ البحث لاختيار صنف</option>`;
+    return;
+  }
+  const words = query.split(/\s+/).filter(Boolean);
+  const matches = state.items
+    .map((item) => {
+      const hay = `${item.name} ${item.unit} ${(item.barcodes || []).join(" ")}`.toLowerCase();
+      const score = words.reduce((sum, word) => sum + (hay.includes(word) ? 1 : 0), 0);
+      return { item, score };
+    })
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
+    .slice(0, 30)
+    .map((row) => row.item);
+  select.innerHTML = matches.length
+    ? `<option value="">اختر الصنف</option>${matches.map((item) => `<option value="${item.id}">${item.name} - ${item.unit} - ${item.barcodes.join(";")}</option>`).join("")}`
+    : `<option value="">لا توجد نتائج مطابقة</option>`;
+}
+
+function selectSearchedItem() {
+  const item = state.items.find((entry) => entry.id === document.getElementById("itemSearchResults").value);
+  if (!item) return;
+  document.getElementById("barcodeInput").value = item.barcodes[0] || "";
+  updateUnitOptions();
+  document.getElementById("unitSelect").value = item.id;
+  document.getElementById("qtyInput")?.focus();
 }
 
 function addDraftLine(options = {}) {
@@ -1157,9 +1187,24 @@ async function openScanner() {
   await new Promise((resolve) => setTimeout(resolve, 120));
   const video = document.getElementById("scannerVideo");
   if (!video) return;
-  scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  try {
+    scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+  } catch {
+    try {
+      scannerStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    } catch {
+      toast("تعذر فتح الكاميرا. تأكد من السماح للمتصفح باستخدام الكاميرا");
+      stopScanner();
+      return;
+    }
+  }
+  if (!scannerOpen) {
+    scannerStream.getTracks().forEach((track) => track.stop());
+    scannerStream = null;
+    return;
+  }
   video.srcObject = scannerStream;
-  await video.play();
+  await video.play().catch(() => {});
   if (!("BarcodeDetector" in window)) {
     toast("المتصفح لا يدعم قراءة الباركود تلقائيًا، استخدم الإدخال اليدوي");
     return;
@@ -1232,19 +1277,24 @@ function exportStock() {
   csvDownload("stock.csv", rows);
 }
 
-function shareStockWhatsApp() {
+async function shareStockWhatsApp() {
   const warehouses = client.stockWarehouse ? state.warehouses.filter((w) => w.id === client.stockWarehouse) : state.warehouses;
-  const rows = stockRows().slice(0, 80);
-  const lines = [
-    "أرصدة المخزون",
-    `التاريخ: ${now()}`,
-    ...rows.map((item) => {
-      const balances = warehouses.map((w) => `${w.name}: ${moneylessNumber(item.stock[w.id] || 0)}`).join(" | ");
-      return `${item.name} - ${item.unit} (${item.barcodes.join(";")}): ${balances}`;
-    })
-  ];
-  const url = `https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`;
-  window.open(url, "_blank");
+  const rows = stockRows();
+  const html = `
+    <html><head><meta charset="utf-8" /></head><body dir="rtl">
+      <table border="1">
+        <thead><tr><th>الباركود</th><th>الصنف</th><th>الوحدة</th>${warehouses.map((w) => `<th>${w.name}</th>`).join("")}</tr></thead>
+        <tbody>${rows.map((item) => `<tr><td>${item.barcodes.join(";")}</td><td>${item.name}</td><td>${item.unit}</td>${warehouses.map((w) => `<td>${item.stock[w.id] || 0}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+    </body></html>
+  `;
+  const file = new File([html], `stock-${todayKey()}.xls`, { type: "application/vnd.ms-excel" });
+  if (navigator.canShare?.({ files: [file] }) && navigator.share) {
+    await navigator.share({ title: "أرصدة المخزون", text: "ملف Excel لأرصدة المخزون", files: [file] });
+    return;
+  }
+  downloadFile(file.name, html, "application/vnd.ms-excel;charset=utf-8");
+  toast("تم تنزيل ملف Excel. افتح واتساب وأرسله من الملفات");
 }
 
 function backup() {
