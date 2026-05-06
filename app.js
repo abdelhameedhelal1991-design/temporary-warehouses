@@ -457,31 +457,23 @@ function renderView() {
 }
 
 function renderDashboard() {
-  const transfers = visibleTransfers();
-  const today = transfers.filter((t) => t.createdAt.includes(todayKey())).length;
-  const low = lowStockRows().length;
-  const totalStock = state.items.reduce((sum, item) => sum + Object.values(item.stock).reduce((a, b) => a + Number(b || 0), 0), 0);
+  const actions = [
+    ["transfers", "التحويلات", "إنشاء ومتابعة التحويلات"],
+    ["receive", "الاستلام", "استلام الأذون الواردة"],
+    ["stock", "الأرصدة", "مراجعة المخزون"],
+    ["items", "الأصناف", "إضافة واستيراد الأصناف"],
+    ["settings", "الإعدادات", "النسخ والتهيئة"]
+  ];
+  if (isAdmin()) actions.push(["users", "المستخدمون", "الحسابات والصلاحيات"]);
   return `
-    ${renderTop("لوحة التحكم", "مؤشرات مباشرة للمخزون والتحويلات")}
-    <div class="grid stats">
-      ${stat("إجمالي الأصناف", state.items.length)}
-      ${stat("إجمالي التحويلات", transfers.length)}
-      ${stat("تحويلات اليوم", today)}
-      ${stat("تنبيهات النقص", low)}
-    </div>
-    <div class="grid two" style="margin-top:14px">
-      <section class="card">
-        <div class="section"><h2>آخر الحركات</h2><button class="btn" data-view="transfers">عرض الكل</button></div>
-        ${transferTable(transfers.slice(0, 6))}
-      </section>
-      <section class="card">
-        <div class="section"><h2>نشاط المستودعات</h2></div>
-        ${warehouseBars()}
-      </section>
-    </div>
-    <section class="card" style="margin-top:14px">
-      <div class="section"><h2>الأصناف الأكثر حركة</h2></div>
-      ${itemMovementBars()}
+    ${renderTop("الرئيسية", "اختر العملية المطلوبة")}
+    <section class="quick-actions">
+      ${actions.map(([id, title, desc]) => `
+        <button class="quick-card" data-view="${id}" type="button">
+          <b>${title}</b>
+          <span>${desc}</span>
+        </button>
+      `).join("")}
     </section>
   `;
 }
@@ -575,16 +567,17 @@ function transferForm() {
 function draftTable() {
   if (!transferDraft.length) return `<div class="empty">لم يتم إضافة أصناف للتحويل بعد.</div>`;
   return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>الباركود</th><th>الصنف</th><th>الوحدة</th><th>الكمية</th><th>تحكم</th></tr></thead>
-        <tbody>${transferDraft.map((line, index) => `
-          <tr>
-            <td>${line.barcode}</td><td>${line.name}</td><td>${line.unit}</td><td>${line.sentQty}</td>
-            <td><button class="btn danger" data-action="removeDraft" data-index="${index}" type="button">حذف</button></td>
-          </tr>
-        `).join("")}</tbody>
-      </table>
+    <div class="line-list">
+      ${transferDraft.map((line, index) => `
+        <article class="line-card">
+          <div>
+            <b>${line.name}</b>
+            <span>${line.unit} - كمية ${moneylessNumber(line.sentQty)}</span>
+            <small>${line.barcode}</small>
+          </div>
+          <button class="btn danger" data-action="removeDraft" data-index="${index}" type="button">حذف</button>
+        </article>
+      `).join("")}
     </div>
   `;
 }
@@ -632,21 +625,21 @@ function filteredTransfers() {
 function transferTable(transfers) {
   if (!transfers.length) return `<div class="empty">لا توجد تحويلات مطابقة.</div>`;
   return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>رقم الحركة</th><th>من</th><th>إلى</th><th>الأصناف</th><th>الحالة</th><th>التاريخ</th><th>تحكم</th></tr></thead>
-        <tbody>${transfers.map((t) => `
-          <tr>
-            <td>${t.id}</td>
-            <td>${warehouseName(t.fromWarehouseId)}</td>
-            <td>${warehouseName(t.toWarehouseId)}</td>
-            <td>${t.lines.map((l) => `${l.name} - ${l.unit}: ${l.receivedQty ?? l.sentQty}`).join("<br>")}</td>
-            <td><span class="badge ${t.status}">${statusLabel(t.status)}</span></td>
-            <td>${t.createdAt}</td>
-            <td>${transferActions(t)}</td>
-          </tr>
-        `).join("")}</tbody>
-      </table>
+    <div class="transfer-list">
+      ${transfers.map((t) => `
+        <article class="transfer-card">
+          <div class="transfer-head">
+            <b>${t.id}</b>
+            <span class="badge ${t.status}">${statusLabel(t.status)}</span>
+          </div>
+          <p>من ${warehouseName(t.fromWarehouseId)} إلى ${warehouseName(t.toWarehouseId)}</p>
+          <div class="line-summary">
+            ${t.lines.map((l) => `<span>${l.name} - ${l.unit}: ${moneylessNumber(l.receivedQty ?? l.sentQty)}</span>`).join("")}
+          </div>
+          <small>${t.createdAt}</small>
+          ${transferActions(t)}
+        </article>
+      `).join("")}
     </div>
   `;
 }
@@ -686,19 +679,20 @@ function receiveEditor(transfer) {
         <button class="btn" data-action="backReceive" type="button">رجوع</button>
       </div>
       <form id="receiveForm" class="form">
-        <div class="table-wrap full">
-          <table>
-            <thead><tr><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th>الكمية المرسلة</th><th>الكمية المستلمة</th></tr></thead>
-            <tbody>${transfer.lines.map((line, index) => `
-              <tr>
-                <td>${line.name}</td>
-                <td>${line.barcode}</td>
-                <td>${line.unit}</td>
-                <td>${line.sentQty}</td>
-                <td><input id="receiveQty-${index}" type="number" min="0" value="${line.receivedQty ?? line.sentQty}" /></td>
-              </tr>
-            `).join("")}</tbody>
-          </table>
+        <div class="line-list full">
+          ${transfer.lines.map((line, index) => `
+            <article class="line-card receive-line">
+              <div>
+                <b>${line.name}</b>
+                <span>${line.unit} - مرسل ${moneylessNumber(line.sentQty)}</span>
+                <small>${line.barcode}</small>
+              </div>
+              <div class="field">
+                <label>المستلم</label>
+                <input id="receiveQty-${index}" type="number" min="0" value="${line.receivedQty ?? line.sentQty}" />
+              </div>
+            </article>
+          `).join("")}
         </div>
         <button class="btn primary full" type="submit">تأكيد استلام الإذن بالكامل</button>
       </form>
@@ -737,15 +731,15 @@ function stockTable() {
   const hiddenCount = Math.max(0, rows.length - visibleRows.length);
   return `
     ${hiddenCount ? `<p class="muted">يتم عرض أول ${moneylessNumber(visibleRows.length)} صنف فقط من ${moneylessNumber(rows.length)} للحفاظ على سرعة الموبايل. استخدم البحث للوصول لأي صنف.</p>` : ""}
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>الباركود</th><th>الصنف</th><th>الوحدة</th>${warehouses.map((w) => `<th>${w.name}</th>`).join("")}<th>تنبيه</th></tr></thead>
+    <div class="table-wrap compact-table-wrap">
+      <table class="compact-table">
+        <thead><tr><th>الصنف</th><th>الوحدة</th><th>الأرصدة</th></tr></thead>
         <tbody>${visibleRows.map((item) => {
           const low = warehouses.some((w) => Number(item.stock[w.id] || 0) <= Number(w.minAlert || 0));
           return `<tr>
-            <td>${item.barcodes.join(";")}</td><td>${item.name}</td><td>${item.unit}</td>
-            ${warehouses.map((w) => `<td>${moneylessNumber(item.stock[w.id] || 0)}</td>`).join("")}
-            <td>${low ? `<span class="badge pending">منخفض</span>` : `<span class="badge approved">جيد</span>`}</td>
+            <td><b>${item.name}</b><small>${item.barcodes.join(";")}</small></td>
+            <td>${item.unit}</td>
+            <td><div class="stock-mini">${warehouses.map((w) => `<span>${w.name}: ${moneylessNumber(item.stock[w.id] || 0)}</span>`).join("")}${low ? `<em>منخفض</em>` : ""}</div></td>
           </tr>`;
         }).join("")}</tbody>
       </table>
@@ -799,18 +793,7 @@ function renderItems() {
 }
 
 function renderReports() {
-  return `
-    ${renderTop("التقارير", "إحصائيات ورسوم بيانية ومؤشرات مخزنية", isAdmin() ? `<button class="btn primary" data-action="exportTransfers">تصدير الحركات</button><button class="btn" data-action="exportStock">تصدير الأرصدة</button>` : "")}
-    <div class="grid three">
-      ${stat("أكثر المستودعات نشاطًا", busiestWarehouse())}
-      ${stat("الأصناف منخفضة الكمية", lowStockRows().length)}
-      ${stat("الحركات المعتمدة", state.transfers.filter((t) => t.status === "approved").length)}
-    </div>
-    <div class="grid two" style="margin-top:14px">
-      <section class="card"><div class="section"><h2>أرصدة المستودعات</h2></div>${stockBars()}</section>
-      <section class="card"><div class="section"><h2>أكثر الأصناف حركة</h2></div>${itemMovementBars()}</section>
-    </div>
-  `;
+  return renderDashboard();
 }
 
 function renderNotifications() {
@@ -888,9 +871,19 @@ function renderUsers() {
       </section>
       <section class="card">
         <div class="section"><h2>الحسابات</h2></div>
-        <div class="table-wrap">
-          <table><thead><tr><th>الاسم</th><th>المستخدم</th><th>الدور</th><th>المستودع</th><th>تحكم</th></tr></thead>
-          <tbody>${state.users.map((u) => `<tr><td>${u.name}</td><td>${u.username}</td><td>${u.role}</td><td>${warehouseName(u.warehouseId)}</td><td><div class="actions"><button class="btn" data-action="changeUsername" data-id="${u.id}">اسم المستخدم</button><button class="btn" data-action="changePassword" data-id="${u.id}">كلمة المرور</button></div></td></tr>`).join("")}</tbody></table>
+        <div class="user-list">
+          ${state.users.map((u) => `
+            <article class="user-card">
+              <div>
+                <b>${u.name}</b>
+                <span>${u.username} - ${u.role} - ${warehouseName(u.warehouseId)}</span>
+              </div>
+              <div class="actions">
+                <button class="btn" data-action="changeUsername" data-id="${u.id}">اسم المستخدم</button>
+                <button class="btn" data-action="changePassword" data-id="${u.id}">كلمة المرور</button>
+              </div>
+            </article>
+          `).join("")}
         </div>
       </section>
     </div>
