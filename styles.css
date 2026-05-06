@@ -370,6 +370,53 @@ textarea {
   font-size: 12px;
 }
 
+.transfer-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.item-picker {
+  z-index: 13;
+}
+
+.lookup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.scan-btn {
+  min-width: 132px;
+}
+
+.selected-item {
+  border: 1px solid rgba(242, 107, 29, 0.28);
+  background: linear-gradient(135deg, rgba(242, 107, 29, 0.12), rgba(36, 95, 187, 0.08));
+  border-radius: var(--radius);
+  padding: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.selected-item div {
+  display: grid;
+  gap: 2px;
+}
+
+.selected-item span,
+.selected-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.empty-mini {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--muted);
+  display: block;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
@@ -849,6 +896,20 @@ video {
   textarea,
   .btn {
     min-height: 46px;
+  }
+
+  .lookup-row {
+    grid-template-columns: 1fr;
+  }
+
+  .scan-btn {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .selected-item {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .table-wrap {

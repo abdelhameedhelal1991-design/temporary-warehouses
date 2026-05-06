@@ -449,9 +449,9 @@ function stat(label, value) {
 function renderTransfers() {
   return `
     ${renderTop("التحويلات", "إنشاء تحويلات جديدة ومتابعة حالاتها", isAdmin() ? `<button class="btn primary" data-action="exportTransfers">تصدير Excel</button>` : "")}
-    <div class="grid two">
+    <div class="grid transfer-grid">
       <section class="card">
-        <div class="section"><h2>تحويل جديد</h2><button class="btn blue" data-action="openScanner">فتح الكاميرا</button></div>
+        <div class="section"><h2>تحويل جديد</h2></div>
         ${transferForm()}
       </section>
     </div>
@@ -483,6 +483,9 @@ function transferForm() {
   const user = currentUser();
   const fromOptions = state.warehouses.map((w) => `<option value="${w.id}" ${user.warehouseId === w.id ? "selected" : ""}>${w.name}</option>`).join("");
   const toOptions = state.warehouses.map((w) => `<option value="${w.id}">${w.name}</option>`).join("");
+  const scannedBarcode = client.scannedBarcode || "";
+  const scannedItem = itemByBarcode(scannedBarcode)[0];
+  const lookupValue = scannedItem?.name || scannedBarcode;
   return `
     <form id="transferForm" class="form">
       <div class="field">
@@ -493,15 +496,16 @@ function transferForm() {
         <label>إلى مستودع</label>
         <select id="toWarehouse">${toOptions}</select>
       </div>
-      <div class="field">
-        <label>باركود</label>
-        <input id="barcodeInput" placeholder="امسح أو اكتب الباركود" value="${client.scannedBarcode || ""}" />
-      </div>
-      <div class="field">
-        <label>اسم الصنف</label>
-        <input id="itemNameInput" placeholder="مثال: حل نوس 390" autocomplete="off" />
+      <div class="field full item-picker">
+        <label>اختيار الصنف</label>
+        <div class="lookup-row">
+          <input id="itemNameInput" placeholder="اكتب اسم الصنف أو الباركود" autocomplete="off" value="${escapeAttr(lookupValue)}" />
+          <button class="btn blue scan-btn" data-action="openScanner" type="button">فتح الكاميرا</button>
+        </div>
+        <input id="barcodeInput" type="hidden" value="${escapeAttr(scannedBarcode)}" />
         <input id="selectedItemId" type="hidden" />
         <div id="itemNameResults" class="suggestions"></div>
+        <div id="selectedItemSummary" class="selected-item empty-mini">اكتب اسم الصنف أو امسح الباركود لاختيار الصنف بسرعة.</div>
       </div>
       <div class="field">
         <label>الوحدة</label>
@@ -917,6 +921,19 @@ function bindView() {
   document.getElementById("itemNameInput")?.addEventListener("input", () => updateItemNameSuggestions());
   document.getElementById("itemNameInput")?.addEventListener("change", selectItemFromNameInput);
   document.getElementById("itemNameInput")?.addEventListener("blur", () => setTimeout(() => updateItemNameSuggestions(true), 160));
+  document.getElementById("itemNameInput")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target.value.trim()) {
+      event.preventDefault();
+      selectItemFromNameInput();
+    }
+  });
+  document.getElementById("itemNameResults")?.addEventListener("mousedown", (event) => {
+    const button = event.target.closest("[data-action='selectItemName']");
+    if (button) {
+      event.preventDefault();
+      selectItemById(button.dataset.id);
+    }
+  });
   document.getElementById("itemNameResults")?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-action='selectItemName']");
     if (button) selectItemById(button.dataset.id);
@@ -924,6 +941,7 @@ function bindView() {
   document.getElementById("globalUnitSelect")?.addEventListener("change", updateSelectedUnitItem);
   document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
   if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
+  if (document.getElementById("selectedItemId")?.value) updateSelectedUnitItem();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
   document.querySelectorAll("[data-action='removeDraft']").forEach((b) => b.addEventListener("click", () => { transferDraft.splice(Number(b.dataset.index), 1); render(); }));
   document.querySelectorAll("[data-action='openReceive']").forEach((b) => b.addEventListener("click", () => openReceive(b.dataset.id)));
@@ -979,6 +997,7 @@ function updateUnitOptions() {
   if (!matches.length) {
     if (selectedInput) selectedInput.value = "";
     updateUnitsForItem(null);
+    updateSelectedItemSummary(null);
     updateItemNameSuggestions();
     return;
   }
@@ -986,6 +1005,7 @@ function updateUnitOptions() {
   if (itemInput) itemInput.value = item.name;
   if (selectedInput) selectedInput.value = item.id;
   updateUnitsForItem(item, item.unit);
+  updateSelectedItemSummary(item);
   updateItemNameSuggestions(true);
 }
 
@@ -1023,7 +1043,8 @@ function updateUnitsForItem(item, preferredUnit = "") {
   }
   unitSelect.innerHTML = units.map((entry) => {
     const selected = (preferredUnit && entry.unit === preferredUnit) || (!preferredUnit && entry.id === item.id) ? "selected" : "";
-    return `<option value="${escapeAttr(entry.unit)}" data-item-id="${escapeAttr(entry.id)}" data-barcode="${escapeAttr(entry.barcode)}" ${selected}>${entry.unit}</option>`;
+    const barcodeText = entry.barcode ? ` - ${entry.barcode}` : "";
+    return `<option value="${escapeAttr(entry.unit)}" data-item-id="${escapeAttr(entry.id)}" data-barcode="${escapeAttr(entry.barcode)}" ${selected}>${entry.unit}${barcodeText}</option>`;
   }).join("");
 }
 
@@ -1037,10 +1058,17 @@ function updateItemNameSuggestions(forceHide = false) {
     return;
   }
   if (selectedInput) selectedInput.value = "";
+  document.getElementById("barcodeInput").value = "";
   updateUnitsForItem(null);
+  updateSelectedItemSummary(null);
   const matches = smartItemMatches(input.value);
   if (!input.value.trim()) {
     list.innerHTML = "";
+    return;
+  }
+  const barcodeMatches = itemByBarcode(input.value.trim());
+  if (barcodeMatches.length) {
+    selectItemById(barcodeMatches[0].id);
     return;
   }
   const uniqueByName = [];
@@ -1085,6 +1113,7 @@ function selectItemById(itemId) {
   if (selectedInput) selectedInput.value = item.id;
   input.value = item.name;
   updateUnitsForItem(item, item.unit);
+  updateSelectedItemSummary(item);
   updateItemNameSuggestions(true);
   document.getElementById("qtyInput")?.focus();
 }
@@ -1097,6 +1126,26 @@ function updateSelectedUnitItem() {
   const barcode = option.dataset.barcode || (item.barcodes || [])[0] || "";
   document.getElementById("barcodeInput").value = barcode;
   document.getElementById("selectedItemId").value = item.id;
+  updateSelectedItemSummary(item);
+}
+
+function updateSelectedItemSummary(item) {
+  const box = document.getElementById("selectedItemSummary");
+  if (!box) return;
+  if (!item) {
+    box.className = "selected-item empty-mini";
+    box.textContent = "اكتب اسم الصنف أو امسح الباركود لاختيار الصنف بسرعة.";
+    return;
+  }
+  const units = itemUnitsByName(item);
+  box.className = "selected-item";
+  box.innerHTML = `
+    <div>
+      <b>${item.name}</b>
+      <span>${units.length} وحدة مرتبطة بهذا الصنف</span>
+    </div>
+    <small>الباركود: ${(item.barcodes || []).join(";") || "-"}</small>
+  `;
 }
 
 function itemForSelectedUnit(selectedItem, selectedUnit, barcode) {
