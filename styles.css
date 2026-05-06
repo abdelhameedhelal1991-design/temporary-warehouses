@@ -303,6 +303,7 @@ button {
 .field {
   display: grid;
   gap: 7px;
+  position: relative;
 }
 
 .field label {
@@ -326,6 +327,47 @@ textarea {
 textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+.suggestions {
+  position: absolute;
+  z-index: 12;
+  top: calc(100% + 6px);
+  inset-inline: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+
+.suggestions:empty {
+  display: none;
+}
+
+.suggestion {
+  width: 100%;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: right;
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  min-height: 0;
+}
+
+.suggestion:hover {
+  outline: 2px solid rgba(242, 107, 29, 0.28);
+}
+
+.suggestion span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 input:focus,

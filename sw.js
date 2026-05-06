@@ -1,9 +1,9 @@
-const CACHE_NAME = "temporary-warehouses-v13";
+const CACHE_NAME = "temporary-warehouses-v14";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/styles.css?v=15",
-  "/app.js?v=15",
+  "/styles.css?v=16",
+  "/app.js?v=16",
   "/manifest.webmanifest?v=2",
   "/icon.svg"
 ];

@@ -499,13 +499,13 @@ function transferForm() {
       </div>
       <div class="field">
         <label>اسم الصنف</label>
-        <input id="itemNameInput" list="itemNameOptions" placeholder="مثال: حل نوس 390" autocomplete="off" />
+        <input id="itemNameInput" placeholder="مثال: حل نوس 390" autocomplete="off" />
         <input id="selectedItemId" type="hidden" />
-        <datalist id="itemNameOptions"></datalist>
+        <div id="itemNameResults" class="suggestions"></div>
       </div>
       <div class="field">
         <label>الوحدة</label>
-        <select id="globalUnitSelect">${allUnits().map((unit) => `<option value="${unit}">${unit}</option>`).join("")}</select>
+        <select id="globalUnitSelect"><option value="">اختر الصنف أولا</option></select>
       </div>
       <div class="field">
         <label>الكمية</label>
@@ -916,6 +916,12 @@ function bindView() {
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
   document.getElementById("itemNameInput")?.addEventListener("input", updateItemNameSuggestions);
   document.getElementById("itemNameInput")?.addEventListener("change", selectItemFromNameInput);
+  document.getElementById("itemNameInput")?.addEventListener("blur", () => setTimeout(() => updateItemNameSuggestions(true), 160));
+  document.getElementById("itemNameResults")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-action='selectItemName']");
+    if (button) selectItemById(button.dataset.id);
+  });
+  document.getElementById("globalUnitSelect")?.addEventListener("change", updateSelectedUnitItem);
   document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
   if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
@@ -969,17 +975,18 @@ function updateUnitOptions() {
   const barcode = document.getElementById("barcodeInput").value.trim();
   const itemInput = document.getElementById("itemNameInput");
   const selectedInput = document.getElementById("selectedItemId");
-  const unitSelect = document.getElementById("globalUnitSelect");
   const matches = itemByBarcode(barcode);
   if (!matches.length) {
     if (selectedInput) selectedInput.value = "";
+    updateUnitsForItem(null);
     updateItemNameSuggestions();
     return;
   }
   const item = matches[0];
   if (itemInput) itemInput.value = item.name;
   if (selectedInput) selectedInput.value = item.id;
-  if (unitSelect) unitSelect.value = item.unit;
+  updateUnitsForItem(item, item.unit);
+  updateItemNameSuggestions(true);
 }
 
 function smartItemMatches(queryText) {
@@ -997,33 +1004,99 @@ function smartItemMatches(queryText) {
     .map((row) => row.item);
 }
 
-function updateItemNameSuggestions() {
+function itemUnitsByName(item) {
+  if (!item) return [];
+  const normalizedName = normalizeSearchText(item.name);
+  return state.items
+    .filter((entry) => normalizeSearchText(entry.name) === normalizedName)
+    .sort((a, b) => String(a.unit || "").localeCompare(String(b.unit || "")))
+    .map((entry) => ({ id: entry.id, unit: entry.unit, barcode: (entry.barcodes || [])[0] || "" }));
+}
+
+function updateUnitsForItem(item, preferredUnit = "") {
+  const unitSelect = document.getElementById("globalUnitSelect");
+  if (!unitSelect) return;
+  const units = itemUnitsByName(item);
+  if (!units.length) {
+    unitSelect.innerHTML = `<option value="">اختر الصنف أولا</option>`;
+    return;
+  }
+  unitSelect.innerHTML = units.map((entry) => {
+    const selected = (preferredUnit && entry.unit === preferredUnit) || (!preferredUnit && entry.id === item.id) ? "selected" : "";
+    return `<option value="${escapeAttr(entry.unit)}" data-item-id="${escapeAttr(entry.id)}" data-barcode="${escapeAttr(entry.barcode)}" ${selected}>${entry.unit}</option>`;
+  }).join("");
+}
+
+function updateItemNameSuggestions(forceHide = false) {
   const input = document.getElementById("itemNameInput");
-  const list = document.getElementById("itemNameOptions");
+  const list = document.getElementById("itemNameResults");
   const selectedInput = document.getElementById("selectedItemId");
   if (!input || !list) return;
+  if (forceHide) {
+    list.innerHTML = "";
+    return;
+  }
   if (selectedInput) selectedInput.value = "";
+  updateUnitsForItem(null);
   const matches = smartItemMatches(input.value);
-  list.innerHTML = matches.map((item) => {
-    const label = `${item.unit} - ${(item.barcodes || []).join(";")}`;
-    return `<option value="${escapeAttr(item.name)}" label="${escapeAttr(label)}"></option>`;
-  }).join("");
+  if (!input.value.trim()) {
+    list.innerHTML = "";
+    return;
+  }
+  const uniqueByName = [];
+  const seen = new Set();
+  matches.forEach((item) => {
+    const key = normalizeSearchText(item.name);
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueByName.push(item);
+    }
+  });
+  list.innerHTML = uniqueByName.map((item) => {
+    const units = itemUnitsByName(item).map((entry) => entry.unit).join("، ");
+    const barcode = (item.barcodes || []).join(";");
+    return `<button class="suggestion" type="button" data-action="selectItemName" data-id="${escapeAttr(item.id)}">
+      <b>${item.name}</b>
+      <span>${units || item.unit} ${barcode ? `- ${barcode}` : ""}</span>
+    </button>`;
+  }).join("") || `<div class="suggestion muted">لا توجد نتائج مطابقة</div>`;
 }
 
 function selectItemFromNameInput() {
   const input = document.getElementById("itemNameInput");
   const selectedInput = document.getElementById("selectedItemId");
-  const unitSelect = document.getElementById("globalUnitSelect");
   if (!input) return;
   const matches = smartItemMatches(input.value);
   const normalizedValue = normalizeSearchText(input.value);
   const item = matches.find((entry) => normalizeSearchText(entry.name) === normalizedValue) || matches[0];
-  if (!item) return;
+  if (!item) {
+    updateUnitsForItem(null);
+    return;
+  }
+  selectItemById(item.id);
+}
+
+function selectItemById(itemId) {
+  const item = state.items.find((entry) => entry.id === itemId);
+  const input = document.getElementById("itemNameInput");
+  const selectedInput = document.getElementById("selectedItemId");
+  if (!item || !input) return;
   document.getElementById("barcodeInput").value = item.barcodes[0] || "";
   if (selectedInput) selectedInput.value = item.id;
   input.value = item.name;
-  if (unitSelect) unitSelect.value = item.unit;
+  updateUnitsForItem(item, item.unit);
+  updateItemNameSuggestions(true);
   document.getElementById("qtyInput")?.focus();
+}
+
+function updateSelectedUnitItem() {
+  const unitSelect = document.getElementById("globalUnitSelect");
+  const option = unitSelect?.selectedOptions?.[0];
+  const item = state.items.find((entry) => entry.id === option?.dataset.itemId);
+  if (!item) return;
+  const barcode = option.dataset.barcode || (item.barcodes || [])[0] || "";
+  document.getElementById("barcodeInput").value = barcode;
+  document.getElementById("selectedItemId").value = item.id;
 }
 
 function itemForSelectedUnit(selectedItem, selectedUnit, barcode) {
@@ -1041,9 +1114,12 @@ function itemForSelectedUnit(selectedItem, selectedUnit, barcode) {
 function addDraftLine(options = {}) {
   const barcode = document.getElementById("barcodeInput").value.trim();
   const itemId = document.getElementById("selectedItemId")?.value;
-  const selectedUnit = document.getElementById("globalUnitSelect")?.value;
+  const unitSelect = document.getElementById("globalUnitSelect");
+  const selectedUnit = unitSelect?.value;
+  const selectedUnitItemId = unitSelect?.selectedOptions?.[0]?.dataset.itemId;
   const qty = Number(document.getElementById("qtyInput").value);
   let selectedItem = state.items.find((entry) => entry.id === itemId);
+  if (selectedUnitItemId) selectedItem = state.items.find((entry) => entry.id === selectedUnitItemId) || selectedItem;
   if (!selectedItem && barcode) selectedItem = itemByBarcode(barcode)[0];
   if (!selectedItem) selectedItem = smartItemMatches(document.getElementById("itemNameInput")?.value || "")[0];
   const item = itemForSelectedUnit(selectedItem, selectedUnit, barcode);
@@ -1051,12 +1127,13 @@ function addDraftLine(options = {}) {
     if (!options.silent) toast("أدخل باركود صحيح ووحدة وكمية");
     return false;
   }
-  transferDraft.push({ itemId: item.id, barcode, name: item.name, unit: item.unit, sentQty: qty, receivedQty: qty });
+  transferDraft.push({ itemId: item.id, barcode: (item.barcodes || [])[0] || barcode, name: item.name, unit: item.unit, sentQty: qty, receivedQty: qty });
   client.scannedBarcode = "";
   saveClient();
   document.getElementById("barcodeInput").value = "";
   document.getElementById("itemNameInput").value = "";
   document.getElementById("selectedItemId").value = "";
+  updateUnitsForItem(null);
   document.getElementById("qtyInput").value = 1;
   if (!options.silent) render();
   return true;
