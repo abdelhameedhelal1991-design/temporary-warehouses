@@ -182,6 +182,14 @@ function normalizeSearchText(value) {
     .trim();
 }
 
+function escapeAttr(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function allUnits() {
   return [...new Set(state.items.map((item) => String(item.unit || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
@@ -485,18 +493,15 @@ function transferForm() {
         <label>إلى مستودع</label>
         <select id="toWarehouse">${toOptions}</select>
       </div>
-      <div class="field full">
-        <label>بحث باسم الصنف</label>
-        <input id="itemSearchInput" placeholder="اكتب اسم الصنف أو جزء منه أو الباركود" />
-        <select id="itemSearchResults"><option value="">ابدأ البحث لاختيار صنف</option></select>
-      </div>
       <div class="field">
         <label>باركود</label>
         <input id="barcodeInput" placeholder="امسح أو اكتب الباركود" value="${client.scannedBarcode || ""}" />
       </div>
       <div class="field">
         <label>اسم الصنف</label>
-        <select id="unitSelect"><option value="">اختر الصنف أو اكتب الباركود أولًا</option></select>
+        <input id="itemNameInput" list="itemNameOptions" placeholder="مثال: حل نوس 390" autocomplete="off" />
+        <input id="selectedItemId" type="hidden" />
+        <datalist id="itemNameOptions"></datalist>
       </div>
       <div class="field">
         <label>الوحدة</label>
@@ -909,9 +914,8 @@ function bindCommon() {
 function bindView() {
   bindFilters();
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
-  document.getElementById("itemSearchInput")?.addEventListener("input", updateItemSearchResults);
-  document.getElementById("itemSearchResults")?.addEventListener("change", selectSearchedItem);
-  document.getElementById("unitSelect")?.addEventListener("change", syncUnitWithSelectedItem);
+  document.getElementById("itemNameInput")?.addEventListener("input", updateItemNameSuggestions);
+  document.getElementById("itemNameInput")?.addEventListener("change", selectItemFromNameInput);
   document.querySelector("[data-action='addLine']")?.addEventListener("click", addDraftLine);
   if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
@@ -963,25 +967,26 @@ function bindFilters() {
 
 function updateUnitOptions() {
   const barcode = document.getElementById("barcodeInput").value.trim();
-  const select = document.getElementById("unitSelect");
+  const itemInput = document.getElementById("itemNameInput");
+  const selectedInput = document.getElementById("selectedItemId");
   const unitSelect = document.getElementById("globalUnitSelect");
   const matches = itemByBarcode(barcode);
-  select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.name}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
-  const units = matches.length ? [...new Set(matches.map((item) => item.unit))] : allUnits();
-  if (unitSelect) unitSelect.innerHTML = units.map((unit) => `<option value="${unit}">${unit}</option>`).join("");
-  syncUnitWithSelectedItem();
-}
-
-function updateItemSearchResults() {
-  const query = normalizeSearchText(document.getElementById("itemSearchInput").value);
-  const select = document.getElementById("itemSearchResults");
-  if (!select) return;
-  if (!query) {
-    select.innerHTML = `<option value="">ابدأ البحث لاختيار صنف</option>`;
+  if (!matches.length) {
+    if (selectedInput) selectedInput.value = "";
+    updateItemNameSuggestions();
     return;
   }
+  const item = matches[0];
+  if (itemInput) itemInput.value = item.name;
+  if (selectedInput) selectedInput.value = item.id;
+  if (unitSelect) unitSelect.value = item.unit;
+}
+
+function smartItemMatches(queryText) {
+  const query = normalizeSearchText(queryText);
+  if (!query) return [];
   const words = query.split(/\s+/).filter(Boolean);
-  const matches = state.items
+  return state.items
     .map((item) => {
       const score = itemSearchScore(item, query, words);
       return { item, score };
@@ -990,26 +995,35 @@ function updateItemSearchResults() {
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
     .slice(0, 20)
     .map((row) => row.item);
-  select.innerHTML = matches.length
-    ? `<option value="">اختر الصنف</option>${matches.map((item) => `<option value="${item.id}">${item.name} - ${item.unit} - ${item.barcodes.join(";")}</option>`).join("")}`
-    : `<option value="">لا توجد نتائج مطابقة</option>`;
 }
 
-function selectSearchedItem() {
-  const item = state.items.find((entry) => entry.id === document.getElementById("itemSearchResults").value);
+function updateItemNameSuggestions() {
+  const input = document.getElementById("itemNameInput");
+  const list = document.getElementById("itemNameOptions");
+  const selectedInput = document.getElementById("selectedItemId");
+  if (!input || !list) return;
+  if (selectedInput) selectedInput.value = "";
+  const matches = smartItemMatches(input.value);
+  list.innerHTML = matches.map((item) => {
+    const label = `${item.unit} - ${(item.barcodes || []).join(";")}`;
+    return `<option value="${escapeAttr(item.name)}" label="${escapeAttr(label)}"></option>`;
+  }).join("");
+}
+
+function selectItemFromNameInput() {
+  const input = document.getElementById("itemNameInput");
+  const selectedInput = document.getElementById("selectedItemId");
+  const unitSelect = document.getElementById("globalUnitSelect");
+  if (!input) return;
+  const matches = smartItemMatches(input.value);
+  const normalizedValue = normalizeSearchText(input.value);
+  const item = matches.find((entry) => normalizeSearchText(entry.name) === normalizedValue) || matches[0];
   if (!item) return;
   document.getElementById("barcodeInput").value = item.barcodes[0] || "";
-  updateUnitOptions();
-  document.getElementById("unitSelect").value = item.id;
-  const unitSelect = document.getElementById("globalUnitSelect");
+  if (selectedInput) selectedInput.value = item.id;
+  input.value = item.name;
   if (unitSelect) unitSelect.value = item.unit;
   document.getElementById("qtyInput")?.focus();
-}
-
-function syncUnitWithSelectedItem() {
-  const item = state.items.find((entry) => entry.id === document.getElementById("unitSelect")?.value);
-  const unitSelect = document.getElementById("globalUnitSelect");
-  if (item && unitSelect) unitSelect.value = item.unit;
 }
 
 function itemForSelectedUnit(selectedItem, selectedUnit, barcode) {
@@ -1026,10 +1040,12 @@ function itemForSelectedUnit(selectedItem, selectedUnit, barcode) {
 
 function addDraftLine(options = {}) {
   const barcode = document.getElementById("barcodeInput").value.trim();
-  const itemId = document.getElementById("unitSelect").value;
+  const itemId = document.getElementById("selectedItemId")?.value;
   const selectedUnit = document.getElementById("globalUnitSelect")?.value;
   const qty = Number(document.getElementById("qtyInput").value);
-  const selectedItem = state.items.find((entry) => entry.id === itemId);
+  let selectedItem = state.items.find((entry) => entry.id === itemId);
+  if (!selectedItem && barcode) selectedItem = itemByBarcode(barcode)[0];
+  if (!selectedItem) selectedItem = smartItemMatches(document.getElementById("itemNameInput")?.value || "")[0];
   const item = itemForSelectedUnit(selectedItem, selectedUnit, barcode);
   if (!barcode || !item || qty <= 0) {
     if (!options.silent) toast("أدخل باركود صحيح ووحدة وكمية");
@@ -1039,6 +1055,8 @@ function addDraftLine(options = {}) {
   client.scannedBarcode = "";
   saveClient();
   document.getElementById("barcodeInput").value = "";
+  document.getElementById("itemNameInput").value = "";
+  document.getElementById("selectedItemId").value = "";
   document.getElementById("qtyInput").value = 1;
   if (!options.silent) render();
   return true;
