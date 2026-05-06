@@ -49,6 +49,7 @@ let transferDraft = [];
 let scannerStream = null;
 let scannerOpen = false;
 let menuOpen = false;
+let refreshTimer = null;
 
 const app = document.getElementById("app");
 
@@ -165,6 +166,13 @@ function userName(id) {
 function itemByBarcode(barcode) {
   const code = String(barcode || "").trim();
   return state.items.filter((item) => (item.barcodes || []).some((entry) => String(entry).trim() === code));
+}
+
+function splitBarcodes(value) {
+  return String(value || "")
+    .split(/[;,،\n\r]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function now() {
@@ -366,16 +374,10 @@ function renderDashboard() {
         ${warehouseBars()}
       </section>
     </div>
-    <div class="grid two" style="margin-top:14px">
-      <section class="card">
-        <div class="section"><h2>الأصناف الأكثر حركة</h2></div>
-        ${itemMovementBars()}
-      </section>
-      <section class="card">
-        <div class="section"><h2>آخر سجل نشاط</h2></div>
-        ${activityList(state.activity.slice(0, 7))}
-      </section>
-    </div>
+    <section class="card" style="margin-top:14px">
+      <div class="section"><h2>الأصناف الأكثر حركة</h2></div>
+      ${itemMovementBars()}
+    </section>
   `;
 }
 
@@ -500,6 +502,13 @@ function visibleTransfers() {
   return sorted.filter((t) => t.fromWarehouseId === user.warehouseId || t.toWarehouseId === user.warehouseId);
 }
 
+function incomingPendingTransfers() {
+  const user = currentUser();
+  return [...state.transfers]
+    .filter((t) => t.status === "pending" && (isAdmin() || t.toWarehouseId === user.warehouseId))
+    .sort((a, b) => b.id.localeCompare(a.id));
+}
+
 function filteredTransfers() {
   let list = visibleTransfers();
   const text = (client.filterText || "").trim().toLowerCase();
@@ -519,7 +528,7 @@ function transferTable(transfers) {
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>رقم الحركة</th><th>من</th><th>إلى</th><th>الأصناف</th><th>الحالة</th><th>القفل</th><th>التاريخ</th><th>تحكم</th></tr></thead>
+        <thead><tr><th>رقم الحركة</th><th>من</th><th>إلى</th><th>الأصناف</th><th>الحالة</th><th>التاريخ</th><th>تحكم</th></tr></thead>
         <tbody>${transfers.map((t) => `
           <tr>
             <td>${t.id}</td>
@@ -527,7 +536,6 @@ function transferTable(transfers) {
             <td>${warehouseName(t.toWarehouseId)}</td>
             <td>${t.lines.map((l) => `${l.name} - ${l.unit}: ${l.receivedQty ?? l.sentQty}`).join("<br>")}</td>
             <td><span class="badge ${t.status}">${statusLabel(t.status)}</span></td>
-            <td><span class="badge ${t.locked ? "locked" : ""}">${t.locked ? "مقفلة" : "مفتوحة"}</span></td>
             <td>${t.createdAt}</td>
             <td>${transferActions(t)}</td>
           </tr>
@@ -542,23 +550,52 @@ function transferActions(t) {
   const canReceive = t.status === "pending" && t.toWarehouseId === user.warehouseId;
   const admin = isAdmin();
   const buttons = [];
-  if (canReceive || admin && t.status === "pending") buttons.push(`<button class="btn success" data-action="receiveTransfer" data-id="${t.id}">استلام</button>`);
+  if (canReceive || admin && t.status === "pending") buttons.push(`<button class="btn success" data-action="openReceive" data-id="${t.id}">استلام</button>`);
   if (admin) {
     buttons.push(`<button class="btn blue" data-action="printTransfer" data-id="${t.id}">طباعة</button>`);
-    buttons.push(`<button class="btn" data-action="toggleLock" data-id="${t.id}">${t.locked ? "فتح" : "قفل"}</button>`);
     buttons.push(`<button class="btn danger" data-action="deleteTransfer" data-id="${t.id}">حذف</button>`);
   }
   return buttons.length ? `<div class="actions">${buttons.join("")}</div>` : `<span class="muted">لا يوجد</span>`;
 }
 
 function renderReceive() {
-  const user = currentUser();
-  const pending = visibleTransfers().filter((t) => t.status === "pending" && (isAdmin() || t.toWarehouseId === user.warehouseId));
+  const selected = state.transfers.find((t) => t.id === client.receiveTransferId && t.status === "pending");
+  if (selected && (isAdmin() || selected.toWarehouseId === currentUser().warehouseId)) return receiveEditor(selected);
+  const pending = incomingPendingTransfers();
   return `
     ${renderTop("الاستلام", "مراجعة التحويلات الواردة وتأكيد الكميات")}
     <section class="card">
       <div class="section"><h2>تحويلات معلقة للاستلام</h2></div>
       ${transferTable(pending)}
+    </section>
+  `;
+}
+
+function receiveEditor(transfer) {
+  return `
+    ${renderTop("استلام التحويل", `${transfer.id} من ${warehouseName(transfer.fromWarehouseId)} إلى ${warehouseName(transfer.toWarehouseId)}`)}
+    <section class="card">
+      <div class="section">
+        <h2>أصناف الإذن</h2>
+        <button class="btn" data-action="backReceive" type="button">رجوع</button>
+      </div>
+      <form id="receiveForm" class="form">
+        <div class="table-wrap full">
+          <table>
+            <thead><tr><th>الصنف</th><th>الباركود</th><th>الوحدة</th><th>الكمية المرسلة</th><th>الكمية المستلمة</th></tr></thead>
+            <tbody>${transfer.lines.map((line, index) => `
+              <tr>
+                <td>${line.name}</td>
+                <td>${line.barcode}</td>
+                <td>${line.unit}</td>
+                <td>${line.sentQty}</td>
+                <td><input id="receiveQty-${index}" type="number" min="0" value="${line.receivedQty ?? line.sentQty}" /></td>
+              </tr>
+            `).join("")}</tbody>
+          </table>
+        </div>
+        <button class="btn primary full" type="submit">تأكيد استلام الإذن بالكامل</button>
+      </form>
     </section>
   `;
 }
@@ -572,6 +609,7 @@ function renderStock() {
         <input id="stockSearch" placeholder="اسم الصنف أو الباركود" value="${client.stockSearch || ""}" />
         <select id="stockWarehouse"><option value="">كل المستودعات</option>${state.warehouses.map((w) => `<option value="${w.id}" ${client.stockWarehouse === w.id ? "selected" : ""}>${w.name}</option>`).join("")}</select>
         <button class="btn primary" data-action="exportStock">تصدير الأرصدة</button>
+        <button class="btn success" data-action="shareStockWhatsApp">مشاركة واتساب</button>
       </div>
       ${stockTable()}
     </section>
@@ -811,12 +849,14 @@ function bindView() {
   if (document.getElementById("barcodeInput")?.value) updateUnitOptions();
   document.getElementById("transferForm")?.addEventListener("submit", createTransfer);
   document.querySelectorAll("[data-action='removeDraft']").forEach((b) => b.addEventListener("click", () => { transferDraft.splice(Number(b.dataset.index), 1); render(); }));
-  document.querySelectorAll("[data-action='receiveTransfer']").forEach((b) => b.addEventListener("click", () => receiveTransfer(b.dataset.id)));
-  document.querySelectorAll("[data-action='toggleLock']").forEach((b) => b.addEventListener("click", () => toggleLock(b.dataset.id)));
+  document.querySelectorAll("[data-action='openReceive']").forEach((b) => b.addEventListener("click", () => openReceive(b.dataset.id)));
+  document.querySelector("[data-action='backReceive']")?.addEventListener("click", backReceive);
+  document.getElementById("receiveForm")?.addEventListener("submit", confirmReceive);
   document.querySelectorAll("[data-action='deleteTransfer']").forEach((b) => b.addEventListener("click", () => deleteTransfer(b.dataset.id)));
   document.querySelectorAll("[data-action='printTransfer']").forEach((b) => b.addEventListener("click", () => printTransfer(b.dataset.id)));
   document.querySelector("[data-action='exportTransfers']")?.addEventListener("click", exportTransfers);
   document.querySelector("[data-action='exportStock']")?.addEventListener("click", exportStock);
+  document.querySelector("[data-action='shareStockWhatsApp']")?.addEventListener("click", shareStockWhatsApp);
   document.querySelector("[data-action='openScanner']")?.addEventListener("click", openScanner);
   document.querySelector("[data-action='stopScanner']")?.addEventListener("click", stopScanner);
   document.getElementById("itemForm")?.addEventListener("submit", createItem);
@@ -926,16 +966,36 @@ async function createTransfer(event) {
   });
   transferDraft = [];
   await persist();
+  await loadState();
+  client.view = "transfers";
+  client.filterStatus = "pending";
+  client.filterWarehouse = toWarehouseId;
+  saveClient();
   render();
-  toast("تم إرسال التحويل وإشعار أمين المستودع المستقبل");
+  toast(`تم إرسال التحويل بنجاح رقم ${transfer.id}`);
+  alert(`تم إرسال التحويل بنجاح\nرقم الإذن: ${transfer.id}`);
 }
 
-async function receiveTransfer(id) {
-  const transfer = state.transfers.find((t) => t.id === id);
+function openReceive(id) {
+  client.receiveTransferId = id;
+  client.view = "receive";
+  view = "receive";
+  saveClient();
+  render();
+}
+
+function backReceive() {
+  client.receiveTransferId = "";
+  saveClient();
+  render();
+}
+
+async function confirmReceive(event) {
+  event.preventDefault();
+  const transfer = state.transfers.find((t) => t.id === client.receiveTransferId);
   if (!transfer || transfer.status !== "pending") return;
-  transfer.lines.forEach((line) => {
-    const value = prompt(`الكمية المستلمة: ${line.name} - ${line.unit}`, line.receivedQty ?? line.sentQty);
-    const qty = Number(value);
+  transfer.lines.forEach((line, index) => {
+    const qty = Number(document.getElementById(`receiveQty-${index}`)?.value);
     if (qty >= 0) line.receivedQty = qty;
   });
   applyTransfer(transfer);
@@ -944,6 +1004,7 @@ async function receiveTransfer(id) {
   transfer.approvedAt = now();
   addActivity(`اعتماد استلام التحويل ${transfer.id}`, transfer);
   state.notifications.unshift({ id: `n-${Date.now()}`, userId: transfer.createdBy, warehouseId: transfer.fromWarehouseId, transferId: transfer.id, read: false, readBy: {}, text: `تم اعتماد استلام التحويل ${transfer.id}` });
+  client.receiveTransferId = "";
   await persist();
   render();
   toast("تم اعتماد الاستلام وتحديث الأرصدة");
@@ -959,15 +1020,6 @@ function applyTransfer(transfer) {
     item.stock[transfer.toWarehouseId] = Number(item.stock[transfer.toWarehouseId] || 0) + qty;
   });
   transfer.applied = true;
-}
-
-async function toggleLock(id) {
-  const transfer = state.transfers.find((t) => t.id === id);
-  if (!transfer || !isAdmin()) return;
-  transfer.locked = !transfer.locked;
-  addActivity(`${transfer.locked ? "قفل" : "فتح"} الحركة ${transfer.id}`, transfer);
-  await persist();
-  render();
 }
 
 async function deleteTransfer(id) {
@@ -996,7 +1048,7 @@ async function createItem(event) {
   event.preventDefault();
   const item = {
     id: `itm-${Date.now()}`,
-    barcodes: document.getElementById("itemBarcodes").value.split(";").map((x) => x.trim()).filter(Boolean),
+    barcodes: splitBarcodes(document.getElementById("itemBarcodes").value),
     name: document.getElementById("itemName").value.trim(),
     unit: document.getElementById("itemUnit").value.trim(),
     stock: {}
@@ -1042,7 +1094,7 @@ async function importItemsFromText(text) {
     const stock = {};
     state.warehouses.forEach((w) => stock[w.id] = 0);
     stock.main = Number(qty || 0);
-    state.items.push({ id: `itm-${Date.now()}-${Math.random().toString(16).slice(2)}`, barcodes: barcodes.split(";").map((x) => x.trim()), name: name.trim(), unit: unit.trim(), stock });
+    state.items.push({ id: `itm-${Date.now()}-${Math.random().toString(16).slice(2)}`, barcodes: splitBarcodes(barcodes), name: name.trim(), unit: unit.trim(), stock });
   });
   addActivity("استيراد أصناف");
   await persist();
@@ -1180,6 +1232,21 @@ function exportStock() {
   csvDownload("stock.csv", rows);
 }
 
+function shareStockWhatsApp() {
+  const warehouses = client.stockWarehouse ? state.warehouses.filter((w) => w.id === client.stockWarehouse) : state.warehouses;
+  const rows = stockRows().slice(0, 80);
+  const lines = [
+    "أرصدة المخزون",
+    `التاريخ: ${now()}`,
+    ...rows.map((item) => {
+      const balances = warehouses.map((w) => `${w.name}: ${moneylessNumber(item.stock[w.id] || 0)}`).join(" | ");
+      return `${item.name} - ${item.unit} (${item.barcodes.join(";")}): ${balances}`;
+    })
+  ];
+  const url = `https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`;
+  window.open(url, "_blank");
+}
+
 function backup() {
   downloadFile("backup.json", JSON.stringify(state, null, 2), "application/json;charset=utf-8");
 }
@@ -1255,6 +1322,18 @@ async function init() {
   registerServiceWorker();
   if (client.token) await loadState();
   render();
+  startAutoRefresh();
+}
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(async () => {
+    if (!client.token || scannerOpen || transferDraft.length) return;
+    const active = document.activeElement;
+    if (active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return;
+    await loadState();
+    render();
+  }, 12000);
 }
 
 function registerServiceWorker() {
