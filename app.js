@@ -213,7 +213,7 @@ function render() {
     return;
   }
 
-  const unread = state.notifications.filter((n) => n.userId === user.id && !n.read).length;
+  const unread = notificationsForUser(user).filter((n) => !notificationRead(n, user.id)).length;
   app.innerHTML = `
     <div class="shell ${menuOpen ? "menu-open" : ""}">
       <header class="mobile-head">
@@ -666,14 +666,30 @@ function renderReports() {
 }
 
 function renderNotifications() {
-  const notes = state.notifications.filter((n) => n.userId === currentUser().id);
+  const user = currentUser();
+  const notes = notificationsForUser(user);
   return `
     ${renderTop("الإشعارات", "تنبيهات التحويلات والحركات المهمة")}
     <section class="card">
       <div class="section"><h2>إشعاراتي</h2><button class="btn" data-action="readAll">تحديد الكل كمقروء</button></div>
-      <div class="notice-list">${notes.length ? notes.map((n) => `<article class="notice"><b>${n.text}</b><p>${n.read ? "مقروء" : "جديد"} - ${n.transferId}</p></article>`).join("") : `<div class="empty">لا توجد إشعارات.</div>`}</div>
+      <div class="notice-list">${notes.length ? notes.map((n) => `<article class="notice"><b>${n.text}</b><p>${notificationRead(n, user.id) ? "مقروء" : "جديد"} - ${n.transferId}</p></article>`).join("") : `<div class="empty">لا توجد إشعارات.</div>`}</div>
     </section>
   `;
+}
+
+function notificationsForUser(user = currentUser()) {
+  if (!user) return [];
+  return state.notifications.filter((note) => {
+    if (user.role === "admin") return true;
+    if (note.userId === user.id) return true;
+    if (note.warehouseId && note.warehouseId === user.warehouseId) return true;
+    const transfer = state.transfers.find((entry) => entry.id === note.transferId);
+    return transfer?.toWarehouseId === user.warehouseId || transfer?.createdBy === user.id;
+  });
+}
+
+function notificationRead(note, userId) {
+  return !!(note.readBy?.[userId] || note.read);
 }
 
 function renderSettings() {
@@ -899,7 +915,15 @@ async function createTransfer(event) {
   };
   addActivity(`إنشاء تحويل ${transfer.id}`, transfer);
   state.transfers.unshift(transfer);
-  state.notifications.unshift({ id: `n-${Date.now()}`, userId: receiverId, transferId: transfer.id, read: false, text: `تحويل جديد من ${warehouseName(fromWarehouseId)} إلى ${warehouseName(toWarehouseId)}` });
+  state.notifications.unshift({
+    id: `n-${Date.now()}`,
+    userId: receiverId,
+    warehouseId: toWarehouseId,
+    transferId: transfer.id,
+    read: false,
+    readBy: {},
+    text: `تحويل جديد من ${warehouseName(fromWarehouseId)} إلى ${warehouseName(toWarehouseId)}`
+  });
   transferDraft = [];
   await persist();
   render();
@@ -919,7 +943,7 @@ async function receiveTransfer(id) {
   transfer.locked = true;
   transfer.approvedAt = now();
   addActivity(`اعتماد استلام التحويل ${transfer.id}`, transfer);
-  state.notifications.unshift({ id: `n-${Date.now()}`, userId: transfer.createdBy, transferId: transfer.id, read: false, text: `تم اعتماد استلام التحويل ${transfer.id}` });
+  state.notifications.unshift({ id: `n-${Date.now()}`, userId: transfer.createdBy, warehouseId: transfer.fromWarehouseId, transferId: transfer.id, read: false, readBy: {}, text: `تم اعتماد استلام التحويل ${transfer.id}` });
   await persist();
   render();
   toast("تم اعتماد الاستلام وتحديث الأرصدة");
@@ -1114,8 +1138,11 @@ function stopScanner() {
 }
 
 async function readAll() {
+  const user = currentUser();
   state.notifications.forEach((n) => {
-    if (n.userId === currentUser().id) n.read = true;
+    if (!notificationsForUser(user).includes(n)) return;
+    n.readBy = { ...(n.readBy || {}), [user.id]: true };
+    if (n.userId === user.id) n.read = true;
   });
   await persist();
   render();
