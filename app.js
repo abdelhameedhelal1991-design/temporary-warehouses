@@ -914,7 +914,7 @@ function bindCommon() {
 function bindView() {
   bindFilters();
   document.getElementById("barcodeInput")?.addEventListener("input", updateUnitOptions);
-  document.getElementById("itemNameInput")?.addEventListener("input", updateItemNameSuggestions);
+  document.getElementById("itemNameInput")?.addEventListener("input", () => updateItemNameSuggestions());
   document.getElementById("itemNameInput")?.addEventListener("change", selectItemFromNameInput);
   document.getElementById("itemNameInput")?.addEventListener("blur", () => setTimeout(() => updateItemNameSuggestions(true), 160));
   document.getElementById("itemNameResults")?.addEventListener("click", (event) => {
