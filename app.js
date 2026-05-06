@@ -662,17 +662,17 @@ function renderItems() {
       <section class="card">
         <div class="section"><h2>استيراد الأصناف</h2></div>
         <div class="field">
-          <label>الصيغة: الباركود، اسم الصنف، الوحدة، الكمية اختيارية</label>
-          <textarea id="importText" placeholder="11111;22222,حليب نوسين,كرتون,50"></textarea>
+          <label>صيغة Excel: الباركود، اسم الصنف، الوحدة، الكمية اختيارية</label>
+          <textarea id="importText" placeholder="اختياري فقط عند النسخ واللصق: 11111;22222,حليب نوسين,كرتون,50"></textarea>
         </div>
         <div class="field" style="margin-top:10px">
           <label>رابط Google Sheets</label>
           <input id="sheetUrl" placeholder="ضع رابط الشيت هنا" />
         </div>
         <div class="actions" style="margin-top:10px">
-          <input id="importFile" type="file" accept=".csv,.txt,.tsv" />
-          <button class="btn primary" data-action="importItems">استيراد</button>
-          <button class="btn" data-action="importSheet">استيراد من Google Sheets</button>
+          <input id="importFile" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" />
+          <button class="btn primary" data-action="importItems">استيراد ملف Excel</button>
+          <button class="btn" data-action="importSheet">استيراد Google Sheets كـ Excel</button>
         </div>
       </section>
     </div>
@@ -1092,9 +1092,16 @@ async function createItem(event) {
 
 async function importItems() {
   const file = document.getElementById("importFile")?.files?.[0];
-  let text = document.getElementById("importText").value;
-  if (file) text = await file.text();
-  await importItemsFromText(text);
+  if (file) {
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (["xlsx", "xls"].includes(ext)) {
+      await importItemsFromRows(await excelRowsFromArrayBuffer(await file.arrayBuffer()));
+      return;
+    }
+    await importItemsFromText(await file.text());
+    return;
+  }
+  await importItemsFromText(document.getElementById("importText").value);
 }
 
 async function importSheet() {
@@ -1104,17 +1111,19 @@ async function importSheet() {
     return;
   }
   try {
-    const response = await fetch(toGoogleCsvUrl(url));
+    const response = await fetch(toGoogleExcelUrl(url));
     if (!response.ok) throw new Error("sheet");
-    const text = await response.text();
-    await importItemsFromText(text);
+    await importItemsFromRows(await excelRowsFromArrayBuffer(await response.arrayBuffer()));
   } catch {
-    toast("تعذر استيراد الشيت. تأكد أن الرابط متاح للقراءة أو منشور CSV");
+    toast("تعذر استيراد الشيت كملف Excel. تأكد أن الرابط متاح للقراءة");
   }
 }
 
 async function importItemsFromText(text) {
-  const rows = parseImportRows(text);
+  await importItemsFromRows(parseImportRows(text));
+}
+
+async function importItemsFromRows(rows) {
   if (!rows.length) {
     toast("لا توجد أصناف صالحة للاستيراد");
     return;
@@ -1132,8 +1141,23 @@ async function importItemsFromText(text) {
   toast("تم استيراد الأصناف إلى المستودع الرئيسي");
 }
 
+async function excelRowsFromArrayBuffer(buffer) {
+  if (!window.XLSX) {
+    toast("تعذر تحميل قارئ Excel. تأكد من الاتصال بالإنترنت ثم أعد المحاولة");
+    return [];
+  }
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  return normalizeImportRows(rows);
+}
+
 function parseImportRows(text = "") {
   const rows = text.includes("\t") ? text.split(/\r?\n/).map((line) => line.split("\t")) : parseCsv(text);
+  return normalizeImportRows(rows);
+}
+
+function normalizeImportRows(rows) {
   return rows
     .map((row) => row.map((cell) => String(cell || "").trim()))
     .filter((row) => row.length >= 3 && row[0] && row[1] && row[2] && !row[0].includes("الباركود"));
@@ -1170,11 +1194,11 @@ function parseCsv(text = "") {
   return rows;
 }
 
-function toGoogleCsvUrl(url) {
+function toGoogleExcelUrl(url) {
   const match = url.match(/\/spreadsheets\/d\/([^/]+)/);
   if (!match) return url;
   const gid = url.match(/[?&]gid=([^&]+)/)?.[1] || "0";
-  return `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${gid}`;
+  return `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=xlsx&gid=${gid}`;
 }
 
 async function openScanner() {
