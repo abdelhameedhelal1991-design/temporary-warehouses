@@ -171,6 +171,17 @@ function itemByBarcode(barcode) {
   return state.items.filter((item) => (item.barcodes || []).some((entry) => String(entry).trim() === code));
 }
 
+function normalizeSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function splitBarcodes(value) {
   return String(value || "")
     .split(/[;,،\n\r]+/)
@@ -454,7 +465,7 @@ function transferForm() {
       </div>
       <div class="field">
         <label>الوحدة</label>
-        <select id="unitSelect"><option value="">اكتب الباركود أولًا</option></select>
+        <select id="unitSelect"><option value="">اختر الصنف أو اكتب الباركود أولًا</option></select>
         <div id="barcodeMatchText" class="hint mini"></div>
       </div>
       <div class="field">
@@ -920,14 +931,16 @@ function updateUnitOptions() {
   const select = document.getElementById("unitSelect");
   const matchText = document.getElementById("barcodeMatchText");
   const matches = itemByBarcode(barcode);
-  select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.name} - ${item.unit}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
+  select.innerHTML = matches.length ? matches.map((item) => `<option value="${item.id}">${item.unit}</option>`).join("") : `<option value="">لا يوجد صنف مطابق</option>`;
   if (matchText) {
-    matchText.textContent = matches.length ? `تم العثور على ${matches.length} وحدة: ${[...new Set(matches.map((item) => item.unit))].join("، ")}` : "";
+    const itemNames = [...new Set(matches.map((item) => item.name))].join("، ");
+    const units = [...new Set(matches.map((item) => item.unit))].join("، ");
+    matchText.textContent = matches.length ? `الصنف: ${itemNames} | الوحدات المتاحة: ${units}` : "";
   }
 }
 
 function updateItemSearchResults() {
-  const query = document.getElementById("itemSearchInput").value.trim().toLowerCase();
+  const query = normalizeSearchText(document.getElementById("itemSearchInput").value);
   const select = document.getElementById("itemSearchResults");
   if (!select) return;
   if (!query) {
@@ -937,13 +950,26 @@ function updateItemSearchResults() {
   const words = query.split(/\s+/).filter(Boolean);
   const matches = state.items
     .map((item) => {
-      const hay = `${item.name} ${item.unit} ${(item.barcodes || []).join(" ")}`.toLowerCase();
-      const score = words.reduce((sum, word) => sum + (hay.includes(word) ? 1 : 0), 0);
+      const name = normalizeSearchText(item.name);
+      const unit = normalizeSearchText(item.unit);
+      const barcodes = (item.barcodes || []).map((barcode) => String(barcode).trim());
+      const exactBarcode = barcodes.some((barcode) => barcode === query);
+      const barcodeStarts = barcodes.some((barcode) => barcode.startsWith(query));
+      const allWordsMatchName = words.every((word) => name.includes(word));
+      const allWordsMatchCombined = words.every((word) => `${name} ${unit} ${barcodes.join(" ")}`.includes(word));
+      const starts = name.startsWith(query);
+      const score =
+        (exactBarcode ? 100 : 0) +
+        (barcodeStarts ? 60 : 0) +
+        (starts ? 45 : 0) +
+        (allWordsMatchName ? 35 : 0) +
+        (allWordsMatchCombined ? 15 : 0) -
+        Math.max(0, name.length - query.length) / 1000;
       return { item, score };
     })
-    .filter((row) => row.score > 0)
+    .filter((row) => row.score >= 15)
     .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
-    .slice(0, 30)
+    .slice(0, 20)
     .map((row) => row.item);
   select.innerHTML = matches.length
     ? `<option value="">اختر الصنف</option>${matches.map((item) => `<option value="${item.id}">${item.name} - ${item.unit} - ${item.barcodes.join(";")}</option>`).join("")}`
@@ -1500,18 +1526,11 @@ async function init() {
   registerServiceWorker();
   if (client.token) await loadState();
   render();
-  startAutoRefresh();
 }
 
 function startAutoRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(async () => {
-    if (!client.token || scannerOpen || transferDraft.length) return;
-    const active = document.activeElement;
-    if (active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return;
-    await loadState();
-    render();
-  }, 12000);
+  refreshTimer = null;
 }
 
 function registerServiceWorker() {
