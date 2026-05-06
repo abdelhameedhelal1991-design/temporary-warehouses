@@ -83,6 +83,36 @@ function send(response, statusCode, body, contentType = "application/json; chars
   response.end(body);
 }
 
+function googleSheetExcelUrl(inputUrl) {
+  const rawUrl = String(inputUrl || "").trim();
+  const match = rawUrl.match(/\/spreadsheets\/d\/([^/]+)/);
+  if (!match) return rawUrl;
+  const gid = rawUrl.match(/[?&]gid=([^&]+)/)?.[1];
+  return `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=xlsx${gid ? `&gid=${gid}` : ""}`;
+}
+
+async function fetchGoogleSheetExcel(inputUrl) {
+  const targetUrl = googleSheetExcelUrl(inputUrl);
+  const parsedTarget = new URL(targetUrl);
+  const isGoogleSheet = parsedTarget.hostname === "docs.google.com" && parsedTarget.pathname.includes("/spreadsheets/");
+  if (!isGoogleSheet) {
+    throw new Error("Only public Google Sheets links are supported");
+  }
+
+  const sheetResponse = await fetch(targetUrl, {
+    redirect: "follow",
+    headers: {
+      "User-Agent": "Mozilla/5.0 Temporary Warehouses Importer"
+    }
+  });
+
+  if (!sheetResponse.ok) {
+    throw new Error(`Google Sheets export failed: ${sheetResponse.status}`);
+  }
+
+  return Buffer.from(await sheetResponse.arrayBuffer());
+}
+
 function makeToken() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
@@ -247,6 +277,24 @@ const server = http.createServer(async (request, response) => {
     const token = getBearerToken(request);
     if (token) sessions.delete(token);
     send(response, 200, JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (request.url.startsWith("/api/google-sheet-excel") && request.method === "GET") {
+    if (!requireSession(request, response)) return;
+    try {
+      const url = new URL(request.url, `http://${request.headers.host}`);
+      const sourceUrl = url.searchParams.get("url");
+      if (!sourceUrl) {
+        send(response, 400, JSON.stringify({ ok: false, error: "Missing Google Sheets URL" }));
+        return;
+      }
+
+      const file = await fetchGoogleSheetExcel(sourceUrl);
+      send(response, 200, file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    } catch (error) {
+      send(response, 502, JSON.stringify({ ok: false, error: error.message }));
+    }
     return;
   }
 

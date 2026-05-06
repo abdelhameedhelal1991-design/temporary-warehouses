@@ -1111,11 +1111,13 @@ async function importSheet() {
     return;
   }
   try {
-    const response = await fetch(toGoogleExcelUrl(url));
+    const response = await fetch(`/api/google-sheet-excel?url=${encodeURIComponent(url)}`, {
+      headers: authHeaders()
+    });
     if (!response.ok) throw new Error("sheet");
     await importItemsFromRows(await excelRowsFromArrayBuffer(await response.arrayBuffer()));
   } catch {
-    toast("تعذر استيراد الشيت كملف Excel. تأكد أن الرابط متاح للقراءة");
+    toast("تعذر استيراد الشيت. تأكد أن رابط Google Sheets متاح لأي شخص لديه الرابط");
   }
 }
 
@@ -1192,13 +1194,6 @@ function parseCsv(text = "") {
   row.push(cell);
   rows.push(row);
   return rows;
-}
-
-function toGoogleExcelUrl(url) {
-  const match = url.match(/\/spreadsheets\/d\/([^/]+)/);
-  if (!match) return url;
-  const gid = url.match(/[?&]gid=([^&]+)/)?.[1] || "0";
-  return `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=xlsx&gid=${gid}`;
 }
 
 async function openScanner() {
