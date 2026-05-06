@@ -754,6 +754,13 @@ function renderSettings() {
           <button class="btn" data-action="restore">استعادة</button>
         </div>
       </section>
+      ${isAdmin() ? `
+      <section class="card">
+        <div class="section"><h2>تهيئة النظام</h2></div>
+        <p class="muted">يمسح كل الأصناف والتحويلات والإشعارات وسجل النشاط، مع الاحتفاظ بالمستودعات والمستخدمين.</p>
+        <button class="btn danger full" data-action="resetSystem" type="button">تهيئة النظام من جديد</button>
+      </section>
+      ` : ""}
       <section class="card">
         <div class="section"><h2>حدود النقص</h2></div>
         <form id="alertForm" class="form">
@@ -879,6 +886,7 @@ function bindView() {
   document.querySelector("[data-action='readAll']")?.addEventListener("click", readAll);
   document.querySelector("[data-action='backup']")?.addEventListener("click", backup);
   document.querySelector("[data-action='restore']")?.addEventListener("click", restore);
+  document.querySelector("[data-action='resetSystem']")?.addEventListener("click", resetSystem);
   document.getElementById("alertForm")?.addEventListener("submit", saveAlerts);
   document.getElementById("userForm")?.addEventListener("submit", createUser);
   document.querySelectorAll("[data-action='changeUsername']").forEach((b) => b.addEventListener("click", () => changeUsername(b.dataset.id)));
@@ -1389,6 +1397,45 @@ async function restore() {
   state = normalizeState(JSON.parse(text.replace(/^\ufeff/, "")));
   await persist();
   render();
+}
+
+async function resetSystem() {
+  if (!isAdmin()) return;
+  const first = confirm("سيتم مسح كل الأصناف والتحويلات والإشعارات وسجل النشاط. سيتم الاحتفاظ بالمستودعات والمستخدمين فقط. هل أنت متأكد؟");
+  if (!first) return;
+  const code = prompt('للتأكيد النهائي اكتب كلمة "تهيئة"');
+  if (String(code || "").trim() !== "تهيئة") {
+    toast("تم إلغاء التهيئة");
+    return;
+  }
+
+  const user = currentUser();
+  state = {
+    ...state,
+    items: [],
+    transfers: [],
+    notifications: [],
+    activity: [{ at: now(), by: user?.id || "admin", action: "تهيئة النظام من جديد" }],
+    settings: { ...state.settings }
+  };
+  transferDraft = [];
+  client.filterText = "";
+  client.filterWarehouse = "";
+  client.filterStatus = "";
+  client.filterDate = "";
+  client.stockSearch = "";
+  client.stockWarehouse = "";
+  client.receiveTransferId = "";
+  client.view = "dashboard";
+  view = "dashboard";
+  saveClient();
+  const saved = await persist();
+  if (!saved) {
+    toast("تعذر حفظ التهيئة على السيرفر");
+    return;
+  }
+  render();
+  toast("تمت تهيئة النظام بنجاح");
 }
 
 async function saveAlerts(event) {
