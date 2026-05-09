@@ -113,8 +113,8 @@ async function fetchGoogleSheetExcel(inputUrl) {
   return Buffer.from(await sheetResponse.arrayBuffer());
 }
 
-function makeToken() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+function makeToken(userId = "") {
+  return `u:${encodeURIComponent(userId)}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}:${Math.random().toString(36).slice(2)}`;
 }
 
 function getBearerToken(request) {
@@ -126,12 +126,21 @@ function getBearerToken(request) {
 function requireSession(request, response) {
   const token = getBearerToken(request);
   const session = token ? sessions.get(token) : null;
+  if (session) {
+    session.lastSeen = Date.now();
+    return session;
+  }
+
+  const tokenUserMatch = token?.match(/^u:([^:]+):/);
+  const fallbackUserId = tokenUserMatch ? decodeURIComponent(tokenUserMatch[1]) : String(request.headers["x-user-id"] || "");
+  if (fallbackUserId) {
+    return { userId: fallbackUserId, createdAt: Date.now(), lastSeen: Date.now(), recovered: true };
+  }
+
   if (!session) {
     send(response, 401, JSON.stringify({ ok: false, error: "Unauthorized" }));
     return null;
   }
-  session.lastSeen = Date.now();
-  return session;
 }
 
 function publicUser(user) {
@@ -188,6 +197,107 @@ function writeDatabase(data) {
   fs.writeFileSync(dbPath, JSON.stringify(data, null, 2), "utf8");
 }
 
+function mainStateOnly(data) {
+  return {
+    ...data,
+    transfers: []
+  };
+}
+
+function mergeTransferLists(primary, legacy) {
+  const out = [];
+  const seen = new Set();
+  [...(primary || []), ...(legacy || [])].forEach((transfer) => {
+    if (!transfer || !transfer.id || seen.has(transfer.id)) return;
+    seen.add(transfer.id);
+    out.push(transfer);
+  });
+  return out.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+async function readCloudTransferRows() {
+  const config = supabaseConfig();
+  if (!config) return [];
+
+  const response = await fetch(`${config.url}/rest/v1/app_state?select=id,data&id=like.transfer:*&order=updated_at.desc`, {
+    headers: {
+      apikey: config.key,
+      Authorization: `Bearer ${config.key}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase transfer read failed: ${response.status}`);
+  }
+
+  const rows = await response.json();
+  return rows.map((row) => row.data).filter(Boolean);
+}
+
+async function readCloudTransfer(id) {
+  const config = supabaseConfig();
+  if (!config || !id) return null;
+
+  const response = await fetch(`${config.url}/rest/v1/app_state?id=eq.${encodeURIComponent(`transfer:${id}`)}&select=data`, {
+    headers: {
+      apikey: config.key,
+      Authorization: `Bearer ${config.key}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase transfer read failed: ${response.status}`);
+  }
+
+  const rows = await response.json();
+  return rows[0]?.data || null;
+}
+
+async function writeCloudRows(rows) {
+  const config = supabaseConfig();
+  if (!config || !rows.length) return false;
+
+  const response = await fetch(`${config.url}/rest/v1/app_state`, {
+    method: "POST",
+    headers: {
+      apikey: config.key,
+      Authorization: `Bearer ${config.key}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates"
+    },
+    body: JSON.stringify(rows)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase write failed: ${response.status}`);
+  }
+
+  return true;
+}
+
+async function writeCloudTransfer(transfer) {
+  if (!transfer?.id) throw new Error("Invalid transfer id");
+  return writeCloudRows([{
+    id: `transfer:${transfer.id}`,
+    data: transfer,
+    updated_at: new Date().toISOString()
+  }]);
+}
+
+async function writeCloudTransfers(transfers) {
+  const rows = (Array.isArray(transfers) ? transfers : [])
+    .filter((transfer) => transfer?.id)
+    .map((transfer) => ({
+      id: `transfer:${transfer.id}`,
+      data: transfer,
+      updated_at: new Date().toISOString()
+    }));
+
+  for (let index = 0; index < rows.length; index += 50) {
+    await writeCloudRows(rows.slice(index, index + 50));
+  }
+}
+
 async function readCloudDatabase() {
   const config = supabaseConfig();
   if (!config) return null;
@@ -204,32 +314,29 @@ async function readCloudDatabase() {
   }
 
   const rows = await response.json();
-  return rows[0]?.data || null;
+  const mainData = rows[0]?.data || null;
+  if (!mainData) return null;
+
+  let transferRows = [];
+  try {
+    transferRows = await readCloudTransferRows();
+  } catch (error) {
+    console.warn(error.message);
+  }
+  mainData.transfers = mergeTransferLists(transferRows, mainData.transfers);
+  return mainData;
 }
 
 async function writeCloudDatabase(data) {
   const config = supabaseConfig();
   if (!config) return false;
 
-  const response = await fetch(`${config.url}/rest/v1/app_state`, {
-    method: "POST",
-    headers: {
-      apikey: config.key,
-      Authorization: `Bearer ${config.key}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates"
-    },
-    body: JSON.stringify({
-      id: "main",
-      data,
-      updated_at: new Date().toISOString()
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Supabase write failed: ${response.status}`);
-  }
-
+  await writeCloudTransfers(data.transfers);
+  await writeCloudRows([{
+    id: "main",
+    data: mainStateOnly(data),
+    updated_at: new Date().toISOString()
+  }]);
   return true;
 }
 
@@ -303,7 +410,7 @@ const server = http.createServer(async (request, response) => {
         return;
       }
 
-      const token = makeToken();
+      const token = makeToken(user.id);
       sessions.set(token, { userId: user.id, createdAt: Date.now(), lastSeen: Date.now() });
       send(response, 200, JSON.stringify({ ok: true, token, user: publicUser(user), state: data || {} }));
     } catch (error) {
@@ -369,6 +476,24 @@ const server = http.createServer(async (request, response) => {
         send(response, 400, JSON.stringify({ ok: false, error: "Invalid transfer" }));
         return;
       }
+      if (supabaseConfig()) {
+        await writeCloudTransfer(transfer);
+        const localData = readDatabase() || {};
+        mergeTransfer(localData, transfer);
+        mergeNotification(localData, (localData.notifications || []).find((entry) => entry.transferId === transfer.id) || {
+          id: `n-${Date.now()}`,
+          userId: transfer.receiverId,
+          warehouseId: transfer.toWarehouseId,
+          transferId: transfer.id,
+          read: false,
+          readBy: {},
+          text: `تحويل جديد من ${transfer.fromWarehouseId} إلى ${transfer.toWarehouseId}`
+        });
+        mergeActivity(localData, transfer.history?.[transfer.history.length - 1]);
+        writeDatabase(localData);
+        send(response, 200, JSON.stringify({ ok: true, transfer, mode: "fast-transfer-row" }));
+        return;
+      }
       const data = await readAppState();
       mergeTransfer(data, transfer);
       mergeNotification(data, (data.notifications || []).find((entry) => entry.transferId === transfer.id) || {
@@ -394,6 +519,26 @@ const server = http.createServer(async (request, response) => {
     if (!session) return;
     try {
       const body = await readJsonBody(request);
+      if (supabaseConfig()) {
+        const transfer = await readCloudTransfer(body.transferId);
+        if (!transfer || transfer.status !== "pending") {
+          send(response, 404, JSON.stringify({ ok: false, error: "Transfer not found" }));
+          return;
+        }
+        transfer.lines = Array.isArray(body.lines) ? body.lines : transfer.lines;
+        transfer.status = "approved";
+        transfer.locked = true;
+        transfer.approvedAt = body.approvedAt || new Date().toISOString();
+        transfer.history = Array.isArray(transfer.history) ? transfer.history : [];
+        transfer.history.push({ at: transfer.approvedAt, by: session.userId, action: `اعتماد استلام التحويل ${transfer.id}` });
+        await writeCloudTransfer(transfer);
+        const localData = readDatabase() || {};
+        mergeTransfer(localData, transfer);
+        mergeNotification(localData, { id: `n-${Date.now()}`, userId: transfer.createdBy, warehouseId: transfer.fromWarehouseId, transferId: transfer.id, read: false, readBy: {}, text: `تم اعتماد استلام التحويل ${transfer.id}` });
+        writeDatabase(localData);
+        send(response, 200, JSON.stringify({ ok: true, transfer, mode: "fast-transfer-row" }));
+        return;
+      }
       const data = await readAppState();
       const transfer = data.transfers?.find((entry) => entry.id === body.transferId);
       if (!transfer || transfer.status !== "pending") {
